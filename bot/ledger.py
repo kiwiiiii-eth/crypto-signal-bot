@@ -84,6 +84,11 @@ class Ledger:
         pos.exit_price = px
         pos.exit_reason = reason
         pos.pnl_bps = gross + carry - FEE_BPS
+        # 逐倉強平模擬: 虧損上限 = 保證金歸零 (跳空穿越停損時分鐘輪詢會記到超過保證金的虧損)
+        liq_bps = -10000 / self.risk.leverage
+        if pos.pnl_bps < liq_bps:
+            pos.pnl_bps = liq_bps
+            pos.exit_reason = "liq"
         pos.pnl_usdt = pos.notional_usdt * pos.pnl_bps / 10000
         self.open_positions.remove(pos)
         self.closed.append(pos)
