@@ -20,18 +20,19 @@ FEE_BPS = 8.0  # Bitget maker 進 maker 出來回
 
 
 @dataclass(frozen=True)
-class StrategyACfg:  # OI減+價漲 → 做空（回測: 1h 淨+68bps 勝率66%）
+class StrategyACfg:  # OI減+價漲 → 做空
+    # 持有掃描(扣市場漂移的真alpha): 1h +65 / 2h +145(勝率71%,尾部最淺) / 8h +271(總量最高但佔槽+尾肥)
     window_min: int = 3
     oi_drop_pct: float = -1.5
     px_up_pct: float = 1.5
-    hold_min: int = 60
+    hold_min: int = _i("A_HOLD_MIN", 120)
     cooldown_min: int = 30
 
 
 @dataclass(frozen=True)
 class StrategyBCfg:  # 極端正費率 → 做空收 carry（回測: 4h 淨+97bps 正日比88%）
     fr_threshold: float = 0.001  # +0.1%
-    hold_min: int = 240
+    hold_min: int = _i("B_HOLD_MIN", 240)
     cooldown_min: int = 480  # 8h = 一個結算週期
 
 
