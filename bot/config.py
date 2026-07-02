@@ -47,6 +47,16 @@ class StrategyCCfg:  # 1h 異動逆勢（回測: 淨+17.9bps，量大單薄，�
 
 
 @dataclass(frozen=True)
+class StrategyDCfg:  # OI增+價跌 → 做多（A 的鏡像: 空頭擁擠過度→反彈; 回測 4h 淨+47bps 勝率64%）
+    window_min: int = 3
+    oi_up_pct: float = 1.5
+    px_down_pct: float = -1.5
+    hold_min: int = _i("D_HOLD_MIN", 240)
+    cooldown_min: int = 30
+    enabled: bool = os.getenv("STRATEGY_D_ENABLED", "true").lower() in {"1", "true", "yes"}
+
+
+@dataclass(frozen=True)
 class RiskCfg:
     equity_usdt: float = _f("EQUITY_USDT", 1000.0)
     margin_usdt: float = _f("MARGIN_USDT", 50.0)    # 單筆保證金
@@ -70,6 +80,7 @@ class Settings:
     a: StrategyACfg = field(default_factory=StrategyACfg)
     b: StrategyBCfg = field(default_factory=StrategyBCfg)
     c: StrategyCCfg = field(default_factory=StrategyCCfg)
+    d: StrategyDCfg = field(default_factory=StrategyDCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     tg: TelegramCfg = field(default_factory=TelegramCfg)
     influx_url: str = os.getenv("INFLUXDB_URL", "http://localhost:8086")

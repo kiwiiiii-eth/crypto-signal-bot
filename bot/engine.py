@@ -13,7 +13,7 @@ from .config import EXCLUDED_TOKENS, Settings
 from .feed import BinanceFeed, binance_usdt_perps
 from .ledger import Ledger
 from .notifier import Notifier
-from .strategies import StrategyA, StrategyB, StrategyC
+from .strategies import StrategyA, StrategyB, StrategyC, StrategyD
 
 TPE = timezone(timedelta(hours=8))
 STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
@@ -38,6 +38,7 @@ class LiveEngine:
         self.notifier = Notifier(self.cfg.tg, dry_run=not self.cfg.tg.token)
         self.strat_a, self.strat_b = StrategyA(self.cfg.a), StrategyB(self.cfg.b)
         self.strat_c = StrategyC(self.cfg.c) if self.cfg.c.enabled else None
+        self.strat_d = StrategyD(self.cfg.d) if self.cfg.d.enabled else None
         self.last_alert: dict[str, int] = {}  # A 的警報級冷卻（任何 OI 警報）
         self.day_pnl: dict = {}
 
@@ -73,6 +74,11 @@ class LiveEngine:
                         if sig is not None:
                             self._try_open(sig, minute, sym, px, oi, fr, i,
                                            self.cfg.a.cooldown_min)
+                        elif self.strat_d:  # A/D 條件互斥, 共用警報級冷卻
+                            sig = self.strat_d.check(sym, px, oi, fr, i)
+                            if sig is not None:
+                                self._try_open(sig, minute, sym, px, oi, fr, i,
+                                               self.cfg.d.cooldown_min)
             # B
             sig = self.strat_b.check(sym, px, oi, fr, i)
             if sig is not None:
@@ -88,7 +94,8 @@ class LiveEngine:
         frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
         pos = self.ledger.try_open(sig, cooldown, fr=frv)
         if pos is not None:
-            flagship = sig.strategy == "A" and frv >= self.cfg.b.fr_threshold
+            flagship = (sig.strategy == "A" and frv >= self.cfg.b.fr_threshold) or \
+                       (sig.strategy == "D" and frv <= -self.cfg.b.fr_threshold)
             self.notifier.signal(sig, flagship=flagship)
 
     def run(self):

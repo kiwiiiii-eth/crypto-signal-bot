@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import StrategyACfg, StrategyBCfg, StrategyCCfg
+from .config import StrategyACfg, StrategyBCfg, StrategyCCfg, StrategyDCfg
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,27 @@ class StrategyB:
         if fr[i] >= self.cfg.fr_threshold:
             return Signal(self.name, sym, -1, i, float(px[i]), self.cfg.hold_min,
                           note=f"fr {fr[i] * 100:+.4f}%")
+        return None
+
+
+class StrategyD:
+    """D｜3 分鐘 OI 增 ≥1.5% 且價跌 ≥1.5% → 做多 4h（A 的鏡像：空頭擁擠 fade）。"""
+
+    name = "D"
+    label = "OI增價跌"
+
+    def __init__(self, cfg: StrategyDCfg):
+        self.cfg = cfg
+
+    def check(self, sym: str, px: np.ndarray, oi: np.ndarray, fr: np.ndarray, i: int) -> Signal | None:
+        w = self.cfg.window_min
+        if i < w or np.isnan(px[i]) or np.isnan(px[i - w]) or np.isnan(oi[i]) or np.isnan(oi[i - w]):
+            return None
+        d_oi = (oi[i] / oi[i - w] - 1) * 100
+        d_px = (px[i] / px[i - w] - 1) * 100
+        if d_oi >= self.cfg.oi_up_pct and d_px <= self.cfg.px_down_pct:
+            return Signal(self.name, sym, +1, i, float(px[i]), self.cfg.hold_min,
+                          note=f"3m OI {d_oi:+.2f}% 價 {d_px:+.2f}%")
         return None
 
 
