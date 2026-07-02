@@ -33,6 +33,8 @@ def binance_usdt_perps() -> set[str]:
 
 
 class BinanceFeed:
+    BENCH = "BTCUSDT"  # 大盤基準, 不在訊號 universe 也要追蹤(regime 濾網用)
+
     def __init__(self, universe: set[str], keep_min: int = 300, oi_workers: int = 20):
         self.universe = sorted(universe)
         self.keep = keep_min
@@ -40,6 +42,7 @@ class BinanceFeed:
         self.px: dict[str, deque] = {s: deque(maxlen=keep_min) for s in self.universe}
         self.oi: dict[str, deque] = {s: deque(maxlen=keep_min) for s in self.universe}
         self.fr: dict[str, float] = {}
+        self.bench_px: deque = deque(maxlen=keep_min)
         self.last_minute: int | None = None
 
     def _fetch_oi(self, sym: str) -> float:
@@ -57,6 +60,10 @@ class BinanceFeed:
             prem = {}
         ois = dict(zip(self.universe, self.pool.map(self._fetch_oi, self.universe)))
         gap = 1 if self.last_minute is None else max(1, minute - self.last_minute)
+        b = prem.get(self.BENCH)
+        for _ in range(gap - 1):
+            self.bench_px.append(float("nan"))
+        self.bench_px.append(float(b["markPrice"]) if b else float("nan"))
         for sym in self.universe:
             p = prem.get(sym)
             px = float(p["markPrice"]) if p else float("nan")
@@ -75,6 +82,16 @@ class BinanceFeed:
         oi = np.asarray(self.oi[sym], dtype=float)
         fr = np.full(len(px), self.fr.get(sym, float("nan")))
         return px, oi, fr
+
+    def bench_momentum(self, window_min: int) -> float | None:
+        """基準(BTC) 過去 window 分鐘報酬; 歷史不足回傳 None。"""
+        import math
+        if len(self.bench_px) <= window_min:
+            return None
+        now, ago = self.bench_px[-1], self.bench_px[-1 - window_min]
+        if math.isnan(now) or math.isnan(ago) or ago <= 0:
+            return None
+        return now / ago - 1
 
     def price(self, sym: str) -> float | None:
         if self.px[sym] and not np.isnan(self.px[sym][-1]):

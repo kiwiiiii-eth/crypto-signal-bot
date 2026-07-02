@@ -58,6 +58,7 @@ class LiveEngine:
 
     def _process_signals(self, minute: int):
         w = self.cfg.a.window_min
+        self._btc_mom = self.feed.bench_momentum(self.cfg.regime.btc_window_min)
         for sym in self.feed.universe:
             px, oi, fr = self.feed.arrays(sym)
             i = len(px) - 1
@@ -90,9 +91,21 @@ class LiveEngine:
                     self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.c.cooldown_min)
 
     def _try_open(self, sig, minute: int, sym: str, px, oi, fr, i: int, cooldown: int):
+        mom = getattr(self, "_btc_mom", None)
+        oi_usd = float(oi[i] * px[i]) if not (np.isnan(oi[i]) or np.isnan(px[i])) else None
+        size_mult = 1.0
+        if sig.strategy == "A" and mom is not None and mom > 0:
+            size_mult = self.cfg.regime.a_upsize_mult  # 逼空環境半倉
+        if sig.strategy == "B" and (oi_usd is None or oi_usd < self.cfg.regime.b_min_oi_usd):
+            return  # B 只做大幣（流動性下限）
+        if sig.strategy == "D":
+            if self.cfg.d.require_btc_down and (mom is None or mom > 0):
+                return  # D 只在 BTC 4h 跌勢接反彈
+            if oi_usd is None or oi_usd < self.cfg.d.min_oi_usd:
+                return
         sig = type(sig)(sig.strategy, sym, sig.side, minute, sig.price, sig.hold_min, sig.note)
         frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
-        pos = self.ledger.try_open(sig, cooldown, fr=frv)
+        pos = self.ledger.try_open(sig, cooldown, fr=frv, size_mult=size_mult)
         if pos is not None:
             flagship = (sig.strategy == "A" and frv >= self.cfg.b.fr_threshold) or \
                        (sig.strategy == "D" and frv <= -self.cfg.b.fr_threshold)
@@ -106,6 +119,12 @@ class LiveEngine:
             from .commands import CommandServer
             CommandServer(self.cfg.tg.token, self.cfg.tg.chat_id, self).start()
             self.notifier.send("🤖 Demo 模擬盤啟動（真實行情、模擬下單）\n/help 看指令")
+        import os
+        if os.getenv("HL_WATCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
+            from .hl_watch import HLWatcher
+            HLWatcher(self.notifier,
+                      poll_min=int(os.getenv("HL_POLL_MIN", "5")),
+                      top_n=int(os.getenv("HL_TOP_N", "60"))).start()
         while True:
             t0 = time.time()
             minute = int(t0 // 60)

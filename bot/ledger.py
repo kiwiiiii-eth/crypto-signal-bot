@@ -34,7 +34,8 @@ class Ledger:
     def _reject(self, why: str) -> None:
         self.rejected[why] = self.rejected.get(why, 0) + 1
 
-    def try_open(self, sig: Signal, cooldown_min: int, fr: float = 0.0) -> Position | None:
+    def try_open(self, sig: Signal, cooldown_min: int, fr: float = 0.0,
+                 size_mult: float = 1.0) -> Position | None:
         key = (sig.strategy, sig.symbol)
         if sig.minute < self.cooldown_until.get(key, -1):
             self._reject("冷卻中")
@@ -51,7 +52,7 @@ class Ledger:
             signal=sig,
             entry_minute=sig.minute,
             entry_price=sig.price,
-            notional_usdt=self.risk.margin_usdt * self.risk.leverage,
+            notional_usdt=self.risk.margin_usdt * self.risk.leverage * size_mult,
             exit_due=sig.minute + sig.hold_min,
             fr_at_entry=fr,
         )

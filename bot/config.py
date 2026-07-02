@@ -54,6 +54,18 @@ class StrategyDCfg:  # OI增+價跌 → 做多（A 的鏡像: 空頭擁擠過度
     hold_min: int = _i("D_HOLD_MIN", 240)
     cooldown_min: int = 30
     enabled: bool = os.getenv("STRATEGY_D_ENABLED", "true").lower() in {"1", "true", "yes"}
+    # 濾網回測: D 在 BTC 4h 下跌時 +144bps/勝率69%, 上漲時 -52bps → 只在跌勢接反彈
+    require_btc_down: bool = True
+    min_oi_usd: float = _f("D_MIN_OI_USD", 1_000_000)
+
+
+@dataclass(frozen=True)
+class RegimeCfg:
+    # A 空單: BTC 4h≤0 全倉(+171bps/正日比100%), >0 仍有+103 → 砍半不砍單
+    btc_window_min: int = 240
+    a_upsize_mult: float = _f("A_UP_REGIME_MULT", 0.5)
+    # B: regime 濾網無效(上漲時反而+127), 不套用; 只加流動性下限(大幣 B 期望值 3 倍)
+    b_min_oi_usd: float = _f("B_MIN_OI_USD", 5_000_000)
 
 
 @dataclass(frozen=True)
@@ -81,6 +93,7 @@ class Settings:
     b: StrategyBCfg = field(default_factory=StrategyBCfg)
     c: StrategyCCfg = field(default_factory=StrategyCCfg)
     d: StrategyDCfg = field(default_factory=StrategyDCfg)
+    regime: RegimeCfg = field(default_factory=RegimeCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     tg: TelegramCfg = field(default_factory=TelegramCfg)
     influx_url: str = os.getenv("INFLUXDB_URL", "http://localhost:8086")
