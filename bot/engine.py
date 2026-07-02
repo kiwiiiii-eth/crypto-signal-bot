@@ -1,0 +1,112 @@
+"""實時 Demo 引擎：真實行情 + 模擬下單/停損/到時平倉，與重放共用策略與帳本。"""
+from __future__ import annotations
+
+import json
+import sys
+import time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+import numpy as np
+
+from .config import EXCLUDED_TOKENS, Settings
+from .feed import BinanceFeed, binance_usdt_perps
+from .ledger import Ledger
+from .notifier import Notifier
+from .strategies import StrategyA, StrategyB, StrategyC
+
+TPE = timezone(timedelta(hours=8))
+STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+class LiveEngine:
+    def __init__(self):
+        self.cfg = Settings()
+        bitget = set(json.loads((DATA_DIR / "bitget_symbols.json").read_text())) \
+            if (DATA_DIR / "bitget_symbols.json").exists() else set()
+        universe = binance_usdt_perps() - EXCLUDED_TOKENS
+        universe = {s for s in universe if not s.endswith("USDC")}
+        if bitget:
+            universe &= bitget
+        self.feed = BinanceFeed(universe)
+        self.ledger = Ledger(self.cfg.risk)
+        if STATE_FILE.exists():
+            self.ledger.restore(json.loads(STATE_FILE.read_text()))
+            print(f"還原狀態: {len(self.ledger.open_positions)} 開倉 "
+                  f"{len(self.ledger.closed)} 歷史", file=sys.stderr)
+        self.notifier = Notifier(self.cfg.tg, dry_run=not self.cfg.tg.token)
+        self.strat_a, self.strat_b = StrategyA(self.cfg.a), StrategyB(self.cfg.b)
+        self.strat_c = StrategyC(self.cfg.c) if self.cfg.c.enabled else None
+        self.last_alert: dict[str, int] = {}  # A 的警報級冷卻（任何 OI 警報）
+        self.day_pnl: dict = {}
+
+    def _save(self):
+        STATE_FILE.write_text(json.dumps(self.ledger.to_dict()))
+
+    def _process_closes(self, minute: int):
+        prices = {}
+        for pos in self.ledger.open_positions:
+            px = self.feed.price(pos.signal.symbol)
+            if px is not None:
+                prices[pos.signal.symbol] = px
+        for pos in self.ledger.mark(minute, prices):
+            day = datetime.fromtimestamp(pos.exit_minute * 60, tz=TPE).date().isoformat()
+            self.day_pnl[day] = self.day_pnl.get(day, 0.0) + (pos.pnl_usdt or 0)
+            self.notifier.close(pos, self.day_pnl[day])
+
+    def _process_signals(self, minute: int):
+        w = self.cfg.a.window_min
+        for sym in self.feed.universe:
+            px, oi, fr = self.feed.arrays(sym)
+            i = len(px) - 1
+            if i < w:
+                continue
+            # A: 警報級冷卻（任何方向 |ΔOI|>=閾值 都重置）
+            if not np.isnan(oi[i]) and not np.isnan(oi[i - w]) and oi[i - w] > 0:
+                d_oi = abs(oi[i] / oi[i - w] - 1) * 100
+                if d_oi >= abs(self.cfg.a.oi_drop_pct):
+                    in_cd = minute - self.last_alert.get(sym, -10**9) < self.cfg.a.cooldown_min
+                    if not in_cd:
+                        self.last_alert[sym] = minute
+                        sig = self.strat_a.check(sym, px, oi, fr, i)
+                        if sig is not None:
+                            self._try_open(sig, minute, sym, px, oi, fr, i,
+                                           self.cfg.a.cooldown_min)
+            # B
+            sig = self.strat_b.check(sym, px, oi, fr, i)
+            if sig is not None:
+                self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.b.cooldown_min)
+            # C（預設關）
+            if self.strat_c:
+                sig = self.strat_c.check(sym, px, oi, fr, i)
+                if sig is not None:
+                    self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.c.cooldown_min)
+
+    def _try_open(self, sig, minute: int, sym: str, px, oi, fr, i: int, cooldown: int):
+        sig = type(sig)(sig.strategy, sym, sig.side, minute, sig.price, sig.hold_min, sig.note)
+        frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
+        pos = self.ledger.try_open(sig, cooldown, fr=frv)
+        if pos is not None:
+            flagship = sig.strategy == "A" and frv >= self.cfg.b.fr_threshold
+            self.notifier.signal(sig, flagship=flagship)
+
+    def run(self):
+        print(f"Demo 模擬盤啟動: {len(self.feed.universe)} 幣 "
+              f"單筆 {self.cfg.risk.margin_usdt:.0f}U×{self.cfg.risk.leverage:.0f}x "
+              f"停損 -{self.cfg.risk.disaster_stop_bps/100:.0f}%", file=sys.stderr)
+        if self.cfg.tg.token:
+            from .commands import CommandServer
+            CommandServer(self.cfg.tg.token, self.cfg.tg.chat_id, self).start()
+            self.notifier.send("🤖 Demo 模擬盤啟動（真實行情、模擬下單）\n/help 看指令")
+        while True:
+            t0 = time.time()
+            minute = int(t0 // 60)
+            try:
+                self.feed.tick(minute)
+                self._process_closes(minute)
+                self._process_signals(minute)
+                self._save()
+            except Exception as e:
+                print(f"tick 錯誤: {e}", file=sys.stderr)
+            time.sleep(max(5, 60 - (time.time() - t0)))

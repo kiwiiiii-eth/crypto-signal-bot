@@ -48,8 +48,9 @@ class StrategyCCfg:  # 1h 異動逆勢（回測: 淨+17.9bps，量大單薄，�
 @dataclass(frozen=True)
 class RiskCfg:
     equity_usdt: float = _f("EQUITY_USDT", 1000.0)
-    position_pct: float = _f("POSITION_PCT", 5.0)   # 單筆 = 本金 5%
-    max_positions: int = _i("MAX_POSITIONS", 8)
+    margin_usdt: float = _f("MARGIN_USDT", 50.0)    # 單筆保證金
+    leverage: float = _f("LEVERAGE", 5.0)           # 名目 = 保證金 × 槓桿
+    max_positions: int = _i("MAX_POSITIONS", 8)     # 每策略獨立上限
     # 重放掃描: -3% 會砍掉 25% 的單且多數會回來; -8% 觸發率 8%、EV 幾乎不損, 尾部保護仍在
     disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
 

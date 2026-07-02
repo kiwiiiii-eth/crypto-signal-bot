@@ -21,3 +21,13 @@ python main.py replay minute_last.csv funding_minute.csv trades_out.csv
 
 訊號源 Binance、下單所 Bitget；`data/bitget_symbols.json` 為上架交集過濾（curl Bitget /api/v2/mix/market/contracts 更新）。
 Telegram 推播格式模仿 zeabur-fastapi-binanceTG（Markdown、分 topic），env: `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TG_THREAD_*`。
+
+## Demo 實盤模擬（live 模式）
+```bash
+export TELEGRAM_BOT_TOKEN=xxx TELEGRAM_CHAT_ID=xxx   # 不設則只在 console 記錄
+python main.py live
+```
+- 真實 Binance 行情（premiumIndex 全市場 + OI 逐檔掃描，每 60s 一 tick）
+- 模擬下單/到時平倉/災難停損，state.json 持久化（重啟不掉倉位）
+- 單筆 `MARGIN_USDT`(50) × `LEVERAGE`(5x) = 250U 名目，可用環境變數調
+- TG 指令: `/status` `/positions` `/pnl` `/equity` `/help`

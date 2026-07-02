@@ -17,8 +17,9 @@ def main() -> None:
         print(__doc__)
         sys.exit(1)
     if sys.argv[1] == "live":
-        print("實時模式尚未接上資料源（等新 InfluxDB 伺服器），先用 replay 驗證。")
-        sys.exit(1)
+        from bot.engine import LiveEngine
+        LiveEngine().run()
+        return
 
     minute_csv, funding_csv = sys.argv[2], sys.argv[3]
     out_csv = sys.argv[4] if len(sys.argv) > 4 else ""

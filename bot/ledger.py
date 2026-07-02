@@ -51,7 +51,7 @@ class Ledger:
             signal=sig,
             entry_minute=sig.minute,
             entry_price=sig.price,
-            notional_usdt=self.risk.equity_usdt * self.risk.position_pct / 100,
+            notional_usdt=self.risk.margin_usdt * self.risk.leverage,
             exit_due=sig.minute + sig.hold_min,
             fr_at_entry=fr,
         )
@@ -91,3 +91,46 @@ class Ledger:
     @property
     def total_pnl_usdt(self) -> float:
         return sum(p.pnl_usdt or 0 for p in self.closed)
+
+    def unrealized(self, prices: dict[str, float]) -> float:
+        total = 0.0
+        for pos in self.open_positions:
+            px = prices.get(pos.signal.symbol)
+            if px is None:
+                continue
+            total += pos.notional_usdt * (px / pos.entry_price - 1) * pos.signal.side
+        return total
+
+    def to_dict(self) -> dict:
+        def _pos(p: Position) -> dict:
+            return {
+                "strategy": p.signal.strategy, "symbol": p.signal.symbol,
+                "side": p.signal.side, "note": p.signal.note,
+                "hold_min": p.signal.hold_min,
+                "entry_minute": p.entry_minute, "entry_price": p.entry_price,
+                "notional_usdt": p.notional_usdt, "exit_due": p.exit_due,
+                "fr_at_entry": p.fr_at_entry, "exit_minute": p.exit_minute,
+                "exit_price": p.exit_price, "exit_reason": p.exit_reason,
+                "pnl_bps": p.pnl_bps, "pnl_usdt": p.pnl_usdt,
+            }
+        return {"open": [_pos(p) for p in self.open_positions],
+                "closed": [_pos(p) for p in self.closed],
+                "cooldown": {f"{k[0]}|{k[1]}": v for k, v in self.cooldown_until.items()}}
+
+    def restore(self, d: dict) -> None:
+        from .strategies import Signal
+
+        def _pos(r: dict) -> Position:
+            sig = Signal(r["strategy"], r["symbol"], r["side"], r["entry_minute"],
+                         r["entry_price"], r["hold_min"], r.get("note", ""))
+            p = Position(sig, r["entry_minute"], r["entry_price"], r["notional_usdt"],
+                         r["exit_due"], r.get("fr_at_entry", 0.0))
+            p.exit_minute = r.get("exit_minute")
+            p.exit_price = r.get("exit_price")
+            p.exit_reason = r.get("exit_reason", "")
+            p.pnl_bps = r.get("pnl_bps")
+            p.pnl_usdt = r.get("pnl_usdt")
+            return p
+        self.open_positions = [_pos(r) for r in d.get("open", [])]
+        self.closed = [_pos(r) for r in d.get("closed", [])]
+        self.cooldown_until = {tuple(k.split("|", 1)): v for k, v in d.get("cooldown", {}).items()}
