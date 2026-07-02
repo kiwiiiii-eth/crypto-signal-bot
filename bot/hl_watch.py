@@ -37,13 +37,15 @@ def build_watchlist(top_n: int = 60) -> list[str]:
     for row in rows:
         w = {k: v for k, v in row["windowPerformances"]}
         av = float(row["accountValue"])
-        at, m = w.get("allTime", {}), w.get("month", {})
+        at, m, wk = w.get("allTime", {}), w.get("month", {}), w.get("week", {})
         pnl_at, vlm_at = float(at.get("pnl", 0)), float(at.get("vlm", 0))
         if av < 500_000 or float(at.get("roi", 0)) < 0.5 or pnl_at < 1_000_000:
             continue
         if float(m.get("roi", 0)) <= 0:
             continue
         if vlm_at > 0 and pnl_at / vlm_at < 0.0005:  # 做市/HFT 型
+            continue
+        if float(wk.get("vlm", 0)) < 100_000:  # 本週沒在交易的不追(名單要活躍)
             continue
         smart.append((row["ethAddress"], pnl_at))
     smart.sort(key=lambda x: -x[1])

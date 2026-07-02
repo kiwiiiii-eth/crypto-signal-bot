@@ -70,9 +70,9 @@ def run(minute_csv: str, funding_csv: str, out_csv: str = "") -> Ledger:
     for sym, (t0, px, oi, fr) in series.items():
         for strat, cd in strategies:
             mask = strat.trigger_mask(px, oi, fr)
-            if strat.name == "B":
+            if strat.name == "F":
                 b_mask_by_sym[sym] = mask
-            if strat.name == "A":
+            if strat.name == "E":
                 # A 的冷卻掛在「任何 OI 警報」上（同 TripleMonitor 行為）:
                 # 30 分內出過警報（含 OI增）的再觸發一律略過
                 alerts = strat.alert_mask(px, oi)
@@ -124,7 +124,7 @@ def run(minute_csv: str, funding_csv: str, out_csv: str = "") -> Ledger:
             frv = fr[i] if not np.isnan(fr[i]) else 0.0
             pos = ledger.try_open(sig, cd, fr=float(frv))
             if pos is not None:
-                flagship = (sig.strategy == "A" and bool(b_mask_by_sym.get(sym, np.zeros(1))[i])
+                flagship = (sig.strategy == "E" and bool(b_mask_by_sym.get(sym, np.zeros(1))[i])
                             if i < len(b_mask_by_sym.get(sym, [])) else False)
                 notifier.signal(sig, flagship=flagship)
 

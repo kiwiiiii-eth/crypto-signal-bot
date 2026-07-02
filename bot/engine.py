@@ -100,16 +100,16 @@ class LiveEngine:
         mom = getattr(self, "_btc_mom", None)
         oi_usd = float(oi[i] * px[i]) if not (np.isnan(oi[i]) or np.isnan(px[i])) else None
         size_mult = 1.0
-        if sig.strategy == "A" and mom is not None and mom > 0:
+        if sig.strategy == "E" and mom is not None and mom > 0:
             size_mult = self.cfg.regime.a_upsize_mult  # 逼空環境半倉
-        if sig.strategy == "B":
+        if sig.strategy == "F":
             if oi_usd is None or oi_usd < self.cfg.regime.b_min_oi_usd:
                 return  # B 只做大幣（流動性下限）
             # Bybit 否決: 兩所同時極端=知情擁擠會續漲 (fade -45bps); 僅 Binance 極端才 fade (+99bps)
             by_fr = getattr(self, "_bybit_fr", {}).get(sym)
             if by_fr is not None and by_fr >= self.cfg.b.fr_threshold:
                 return
-        if sig.strategy == "D":
+        if sig.strategy == "G":
             if self.cfg.d.require_btc_down and (mom is None or mom > 0):
                 return  # D 只在 BTC 4h 跌勢接反彈
             if oi_usd is None or oi_usd < self.cfg.d.min_oi_usd:
@@ -118,8 +118,8 @@ class LiveEngine:
         frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
         pos = self.ledger.try_open(sig, cooldown, fr=frv, size_mult=size_mult)
         if pos is not None:
-            flagship = (sig.strategy == "A" and frv >= self.cfg.b.fr_threshold) or \
-                       (sig.strategy == "D" and frv <= -self.cfg.b.fr_threshold)
+            flagship = (sig.strategy == "E" and frv >= self.cfg.b.fr_threshold) or \
+                       (sig.strategy == "G" and frv <= -self.cfg.b.fr_threshold)
             self.notifier.signal(sig, flagship=flagship)
 
     def run(self):

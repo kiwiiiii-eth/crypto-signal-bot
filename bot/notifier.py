@@ -13,7 +13,7 @@ from .strategies import Signal
 
 TPE = timezone(timedelta(hours=8))
 
-STRAT_LABEL = {"A": "OI減價漲", "B": "極端正費率", "C": "1h異動逆勢", "D": "OI增價跌"}
+STRAT_LABEL = {"E": "OI減價漲", "F": "極端正費率", "C": "1h異動逆勢", "G": "OI增價跌"}
 
 
 def _fmt_ts(minute: int) -> str:

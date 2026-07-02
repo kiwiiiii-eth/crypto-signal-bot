@@ -27,7 +27,7 @@ class Signal:
 class StrategyA:
     """A｜3 分鐘 OI 減 ≥1.5% 且價漲 ≥1.5% → 做空 1h。"""
 
-    name = "A"
+    name = "E"
     label = "OI減價漲"
 
     def __init__(self, cfg: StrategyACfg):
@@ -66,7 +66,7 @@ class StrategyA:
 class StrategyB:
     """B｜資金費率 ≥ +0.1% → 做空 4h 收 carry。"""
 
-    name = "B"
+    name = "F"
     label = "極端正費率"
 
     def __init__(self, cfg: StrategyBCfg):
@@ -88,7 +88,7 @@ class StrategyB:
 class StrategyD:
     """D｜3 分鐘 OI 增 ≥1.5% 且價跌 ≥1.5% → 做多 4h（A 的鏡像：空頭擁擠 fade）。"""
 
-    name = "D"
+    name = "G"
     label = "OI增價跌"
 
     def __init__(self, cfg: StrategyDCfg):

@@ -2,9 +2,9 @@
 
 逆勢做空訊號 bot（paper trading）。規格見 SecondBrain《Trading Bot 架構藍圖》§8。
 
-## 策略
-- **A｜OI減價漲做空**：3m ΔOI≤-1.5% 且 Δ價≥+1.5% → 做空 1h（回測 淨+68bps、勝率66%）
-- **B｜極端正費率做空**：fr≥+0.1% → 做空 4h 收 carry，冷卻 8h（回測 淨+97bps、正日比88%）
+## 策略（E/F/G）
+- **E｜OI減價漲做空**：3m ΔOI≤-1.5% 且 Δ價≥+1.5% → 做空 1h（回測 淨+68bps、勝率66%）
+- **F｜極端正費率做空**：fr≥+0.1% → 做空 4h 收 carry，冷卻 8h（回測 淨+97bps、正日比88%）
 - **C｜1h異動逆勢**：預設關閉（`STRATEGY_C_ENABLED=true` 開啟）
 - A+B 同幣同時觸發 = 旗艦訊號 🏴
 
@@ -31,3 +31,7 @@ python main.py live
 - 模擬下單/到時平倉/災難停損，state.json 持久化（重啟不掉倉位）
 - 單筆 `MARGIN_USDT`(50) × `LEVERAGE`(5x) = 250U 名目，可用環境變數調
 - TG 指令: `/status` `/positions` `/pnl` `/equity` `/help`
+
+## 定義備註
+- **OI 下限 = Binance 未平倉合約美元名目（張數×mark price, USD）**，非幣數、非 Bitget 數據。E 無下限、F ≥5M、G ≥1M。
+- 災難停損 -8%＝持倉最深逆行上限（MAE 掃描定案：更緊的水位會誤殺會回來的贏單，E 的贏單 P90 逆行達 7.2%）。
