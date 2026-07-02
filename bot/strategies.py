@@ -42,6 +42,15 @@ class StrategyA:
         with np.errstate(invalid="ignore"):
             return (d_oi <= self.cfg.oi_drop_pct) & (d_px >= self.cfg.px_up_pct)
 
+    def alert_mask(self, px: np.ndarray, oi: np.ndarray) -> np.ndarray:
+        """任何 |ΔOI|≥閾值 的警報（含 OI增）。冷卻鍵用這個：
+        剛震盪完（任何方向警報）30 分內的再觸發是 whipsaw，重放驗證均虧 -198bps。"""
+        w = self.cfg.window_min
+        d_oi = np.full_like(px, np.nan)
+        d_oi[w:] = (oi[w:] / oi[:-w] - 1) * 100
+        with np.errstate(invalid="ignore"):
+            return np.abs(d_oi) >= abs(self.cfg.oi_drop_pct)
+
     def check(self, sym: str, px: np.ndarray, oi: np.ndarray, fr: np.ndarray, i: int) -> Signal | None:
         w = self.cfg.window_min
         if i < w or np.isnan(px[i]) or np.isnan(px[i - w]) or np.isnan(oi[i]) or np.isnan(oi[i - w]):

@@ -50,7 +50,8 @@ class RiskCfg:
     equity_usdt: float = _f("EQUITY_USDT", 1000.0)
     position_pct: float = _f("POSITION_PCT", 5.0)   # 單筆 = 本金 5%
     max_positions: int = _i("MAX_POSITIONS", 8)
-    disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 300.0)  # 逆行 -3% 硬停
+    # 重放掃描: -3% 會砍掉 25% 的單且多數會回來; -8% 觸發率 8%、EV 幾乎不損, 尾部保護仍在
+    disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
 
 
 @dataclass(frozen=True)

@@ -39,7 +39,8 @@ class Ledger:
         if sig.minute < self.cooldown_until.get(key, -1):
             self._reject("冷卻中")
             return None
-        if len(self.open_positions) >= self.risk.max_positions:
+        # 上限每策略獨立: B 持倉 4h 會長期佔位，不能擠掉 A 的密集訊號（重放驗證被擠掉的單均賺 +214bps）
+        if sum(1 for p in self.open_positions if p.signal.strategy == sig.strategy) >= self.risk.max_positions:
             self._reject("倉位滿")
             return None
         if any(p.signal.symbol == sig.symbol for p in self.open_positions):

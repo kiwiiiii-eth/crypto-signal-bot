@@ -72,6 +72,19 @@ def run(minute_csv: str, funding_csv: str, out_csv: str = "") -> Ledger:
             mask = strat.trigger_mask(px, oi, fr)
             if strat.name == "B":
                 b_mask_by_sym[sym] = mask
+            if strat.name == "A":
+                # A 的冷卻掛在「任何 OI 警報」上（同 TripleMonitor 行為）:
+                # 30 分內出過警報（含 OI增）的再觸發一律略過
+                alerts = strat.alert_mask(px, oi)
+                cd_a = strat.cfg.cooldown_min
+                last = -10**9
+                for i in np.flatnonzero(alerts):
+                    if i - last < cd_a:
+                        continue
+                    last = int(i)
+                    if mask[i]:
+                        events.append((t0 + int(i), sym, strat, cd))
+                continue
             for i in np.flatnonzero(mask):
                 events.append((t0 + int(i), sym, strat, cd))
     events.sort(key=lambda e: e[0])
