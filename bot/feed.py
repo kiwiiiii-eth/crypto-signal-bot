@@ -83,6 +83,20 @@ class BinanceFeed:
         fr = np.full(len(px), self.fr.get(sym, float("nan")))
         return px, oi, fr
 
+    def fetch_bybit_funding(self) -> dict[str, float]:
+        """Bybit 全市場 funding（B 的否決濾網用：Bybit 也極端=知情擁擠, fade 會虧）。"""
+        try:
+            req = urllib.request.Request(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                headers={"User-Agent": "crypto-signal-bot"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            return {t["symbol"]: float(t["fundingRate"])
+                    for t in data["result"]["list"] if t.get("fundingRate")}
+        except Exception as e:
+            print(f"bybit funding 失敗: {e}", file=sys.stderr)
+            return {}
+
     def bench_momentum(self, window_min: int) -> float | None:
         """基準(BTC) 過去 window 分鐘報酬; 歷史不足回傳 None。"""
         import math

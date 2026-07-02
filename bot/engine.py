@@ -59,6 +59,12 @@ class LiveEngine:
     def _process_signals(self, minute: int):
         w = self.cfg.a.window_min
         self._btc_mom = self.feed.bench_momentum(self.cfg.regime.btc_window_min)
+        # Bybit 否決濾網每 5 分鐘刷新一次即可（funding 變動慢）
+        if minute - getattr(self, "_bybit_fr_at", -10) >= 5:
+            fr_map = self.feed.fetch_bybit_funding()
+            if fr_map:
+                self._bybit_fr = fr_map
+                self._bybit_fr_at = minute
         for sym in self.feed.universe:
             px, oi, fr = self.feed.arrays(sym)
             i = len(px) - 1
@@ -96,8 +102,13 @@ class LiveEngine:
         size_mult = 1.0
         if sig.strategy == "A" and mom is not None and mom > 0:
             size_mult = self.cfg.regime.a_upsize_mult  # 逼空環境半倉
-        if sig.strategy == "B" and (oi_usd is None or oi_usd < self.cfg.regime.b_min_oi_usd):
-            return  # B 只做大幣（流動性下限）
+        if sig.strategy == "B":
+            if oi_usd is None or oi_usd < self.cfg.regime.b_min_oi_usd:
+                return  # B 只做大幣（流動性下限）
+            # Bybit 否決: 兩所同時極端=知情擁擠會續漲 (fade -45bps); 僅 Binance 極端才 fade (+99bps)
+            by_fr = getattr(self, "_bybit_fr", {}).get(sym)
+            if by_fr is not None and by_fr >= self.cfg.b.fr_threshold:
+                return
         if sig.strategy == "D":
             if self.cfg.d.require_btc_down and (mom is None or mom > 0):
                 return  # D 只在 BTC 4h 跌勢接反彈
