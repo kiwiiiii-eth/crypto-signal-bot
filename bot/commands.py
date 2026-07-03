@@ -124,6 +124,14 @@ class CommandServer:
                 f"未實現(估): `{upnl:+.2f}`\n"
                 f"帳本估值: {eq:.2f} USDT\n"
                 f"保證金占用: `{margin_used:.1f}` / 上限 `{e.cfg.risk.margin_cap_usdt:.0f}`")
+        # 實盤起算的真實成本（交易所實收, 非估值）
+        fee_paid = sum(p.fee_usdt or 0 for p in e.ledger.closed) + \
+                   sum(p.fee_usdt or 0 for p in e.ledger.open_positions)
+        funding = sum(p.funding_usdt or 0 for p in e.ledger.closed)
+        out += (f"\n\n💸 *實盤累計成本*\n"
+                f"已付手續費: `-{fee_paid:.4f} USDT`\n"
+                f"資金費率(已結倉位): `{funding:+.4f} USDT`\n"
+                f"_持倉中的 funding 於平倉結算時計入_")
         return out
 
     def cmd_chart(self, arg: str = "") -> str | None:
