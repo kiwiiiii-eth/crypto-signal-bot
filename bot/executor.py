@@ -119,14 +119,33 @@ class BitgetExecutor:
         pp = int(self.contracts[sym]["pricePlace"])
         return f"{px:.{pp}f}"
 
+    def ticker(self, sym: str) -> dict:
+        """Bitget 盤口: last/bid/ask（公開接口, 無需簽名）。"""
+        url = f"{BASE}/api/v2/mix/market/ticker?symbol={sym}&productType={self.product}"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            d = json.loads(r.read())["data"][0]
+        return {"last": float(d["lastPr"]),
+                "bid": float(d.get("bidPr") or 0), "ask": float(d.get("askPr") or 0)}
+
     # ---- 開/平倉 ----
     def open(self, pos: Position) -> str:
         sym = self.map_symbol(pos.signal.symbol)
         if sym not in self.contracts:
             raise ExecError(f"{sym} 不在 Bitget 合約表")
+        # 盤口比價: Binance 訊號價 vs Bitget 現價, 偏差過大=已被追走或兩所脫鉤 → 棄單
+        tk = self.ticker(sym)
+        # 市價單實際會吃的一側: 買吃 ask、賣吃 bid
+        exec_px = (tk["ask"] if pos.signal.side > 0 else tk["bid"]) or tk["last"]
+        dev_bps = (exec_px / pos.entry_price - 1) * 10000
+        # 不利方向 = 買得更貴 / 賣(空)得更便宜
+        adverse = dev_bps * pos.signal.side
+        if adverse > self.cfg.max_dev_bps:
+            raise ExecError(f"{sym} Bitget 盤口偏差 {dev_bps:+.0f}bps "
+                            f"(Binance {pos.entry_price:.6g} → Bitget {exec_px:.6g}) 棄單")
         self._prep_symbol(sym)
-        size = self._round_size(sym, pos.notional_usdt, pos.entry_price)
-        stop_px = pos.entry_price * (1 - pos.signal.side * self.risk.disaster_stop_bps / 10000)
+        # 數量與停損以 Bitget 實際盤口為基準, 而非 Binance 訊號價
+        size = self._round_size(sym, pos.notional_usdt, exec_px)
+        stop_px = exec_px * (1 - pos.signal.side * self.risk.disaster_stop_bps / 10000)
         body = {
             "symbol": sym, "productType": self.product, "marginMode": "isolated",
             "marginCoin": self.margin_coin, "size": str(size),

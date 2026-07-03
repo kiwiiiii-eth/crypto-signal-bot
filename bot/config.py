@@ -87,6 +87,8 @@ class ExecCfg:
     api_key: str = os.getenv("BITGET_API_KEY", "")
     api_secret: str = os.getenv("BITGET_API_SECRET", "")
     passphrase: str = os.getenv("BITGET_PASSPHRASE", "")
+    # 開倉前 Bitget 盤口 vs Binance 訊號價偏差上限, 超過即棄單（避免追價/兩所脫鉤）
+    max_dev_bps: float = _f("MAX_PRICE_DEV_BPS", 50.0)
 
 
 @dataclass(frozen=True)
