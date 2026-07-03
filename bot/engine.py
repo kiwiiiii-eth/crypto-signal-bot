@@ -62,11 +62,35 @@ class LiveEngine:
             if self.executor:
                 try:
                     self.executor.close(pos)
+                    self._reconcile_close(pos)
                 except Exception as e:
                     self.notifier.send(f"🚨 實盤平倉失敗 `{pos.signal.symbol}`: {e}\n請手動檢查交易所倉位")
             day = datetime.fromtimestamp(pos.exit_minute * 60, tz=TPE).date().isoformat()
             self.day_pnl[day] = self.day_pnl.get(day, 0.0) + (pos.pnl_usdt or 0)
             self.notifier.close(pos, self.day_pnl[day])
+
+    def _reconcile_close(self, pos):
+        """平倉後用 Bitget 結算數字覆蓋帳本（真實出場價/手續費/funding/淨損益）。"""
+        for _ in range(5):
+            time.sleep(1)
+            try:
+                r = self.executor.last_closed(pos.signal.symbol)
+            except Exception:
+                continue
+            # utime 需晚於進場, 才確定是這一筆而非更早的歷史倉位
+            if r and r["utime"] // 60000 >= pos.entry_minute:
+                if r["close_price"] > 0:
+                    pos.exit_price = r["close_price"]
+                if r["open_price"] > 0:
+                    pos.entry_price = r["open_price"]
+                pos.fee_usdt = r["fee"]
+                pos.funding_usdt = r["funding"]
+                pos.pnl_usdt = r["net"]
+                if pos.notional_usdt:
+                    pos.pnl_bps = r["net"] / pos.notional_usdt * 10000
+                pos.pnl_source = "exchange"
+                return
+        print(f"對帳失敗(沿用模擬值): {pos.signal.symbol}", file=sys.stderr)
 
     def _process_signals(self, minute: int):
         w = self.cfg.a.window_min
@@ -132,7 +156,14 @@ class LiveEngine:
         if pos is not None:
             if self.executor:
                 try:
-                    self.executor.open(pos)
+                    oid = self.executor.open(pos)
+                    pos.order_id = oid
+                    info = self.executor.fill_info(sym, oid)
+                    if info:  # 用真實成交均價/名目/開倉手續費覆蓋
+                        pos.entry_price = info["price"]
+                        if info["size"] > 0:
+                            pos.notional_usdt = info["price"] * info["size"]
+                        pos.fee_usdt = info["fee"]
                 except Exception as e:
                     # 真單失敗 → 撤掉帳本倉位, 帳本必須與交易所一致
                     self.ledger.open_positions.remove(pos)

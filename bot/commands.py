@@ -88,10 +88,20 @@ class CommandServer:
                       datetime.fromtimestamp(p.exit_minute * 60, tz=TPE).date() == today)
         wins = sum(1 for p in e.ledger.closed if (p.pnl_bps or 0) > 0)
         n = len(e.ledger.closed)
-        return (f"💰 *已實現損益*\n\n"
-                f"今日: `{realized_today:+.2f} USDT`（{n_today} 單）\n"
-                f"累計: `{e.ledger.total_pnl_usdt:+.2f} USDT`（{n} 單，勝率 "
-                f"{wins/n*100 if n else 0:.0f}%）")
+        out = (f"💰 *已實現損益*\n\n"
+               f"今日: `{realized_today:+.2f} USDT`（{n_today} 單）\n"
+               f"累計: `{e.ledger.total_pnl_usdt:+.2f} USDT`（{n} 單，勝率 "
+               f"{wins/n*100 if n else 0:.0f}%）")
+        exch = [p for p in e.ledger.closed if p.pnl_source == "exchange"]
+        if exch:
+            fee = sum(p.fee_usdt or 0 for p in exch)
+            fund = sum(p.funding_usdt or 0 for p in exch)
+            out += (f"\n其中交易所結算 {len(exch)} 單: "
+                    f"手續費 `-{fee:.4f}` funding `{fund:+.4f}`")
+        model = n - len(exch)
+        if model and e.cfg.exec_.mode == "live":
+            out += f"\n⚠️ {model} 單為模擬估值（對帳未成）"
+        return out
 
     def cmd_equity(self) -> str:
         e = self.engine
@@ -101,17 +111,19 @@ class CommandServer:
         eq = e.cfg.risk.equity_usdt + e.ledger.total_pnl_usdt + upnl
         margin_used = sum(p.notional_usdt / e.cfg.risk.leverage
                           for p in e.ledger.open_positions)
-        out = (f"🏦 *總權益*\n\n"
-               f"初始本金: `{e.cfg.risk.equity_usdt:.2f}`\n"
-               f"已實現: `{e.ledger.total_pnl_usdt:+.2f}`\n"
-               f"未實現: `{upnl:+.2f}`\n"
-               f"*權益(帳本): {eq:.2f} USDT（{(eq/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n"
-               f"保證金占用: `{margin_used:.1f}` / 上限 `{e.cfg.risk.margin_cap_usdt:.0f}`")
-        if e.executor:
+        out = f"🏦 *總權益*\n\n"
+        if e.executor:  # 實盤: 交易所真值為主
             try:
-                out += f"\n交易所實際權益: `{e.executor.equity():.2f} USDT`"
+                real = e.executor.equity()
+                out += (f"*交易所權益: {real:.2f} USDT"
+                        f"（{(real/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n")
             except Exception as ex:
-                out += f"\n交易所權益查詢失敗: {ex}"
+                out += f"交易所權益查詢失敗: {ex}\n"
+        out += (f"初始本金: `{e.cfg.risk.equity_usdt:.2f}`\n"
+                f"已實現: `{e.ledger.total_pnl_usdt:+.2f}`\n"
+                f"未實現(估): `{upnl:+.2f}`\n"
+                f"帳本估值: {eq:.2f} USDT\n"
+                f"保證金占用: `{margin_used:.1f}` / 上限 `{e.cfg.risk.margin_cap_usdt:.0f}`")
         return out
 
     def cmd_chart(self, arg: str = "") -> str | None:

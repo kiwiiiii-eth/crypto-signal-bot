@@ -157,6 +157,38 @@ class BitgetExecutor:
                 return None
             raise
 
+    # ---- 真實成交回查 ----
+    def fill_info(self, sym_raw: str, order_id: str, tries: int = 5) -> dict | None:
+        """查訂單實際成交: 均價/數量/手續費。未成交回 None。"""
+        sym = self.map_symbol(sym_raw)
+        for i in range(tries):
+            out = self._req("GET", "/api/v2/mix/order/detail",
+                            query=f"symbol={sym}&productType={self.product}&orderId={order_id}")
+            d = out.get("data") or {}
+            if d.get("state") == "filled" and float(d.get("priceAvg") or 0) > 0:
+                return {"price": float(d["priceAvg"]),
+                        "size": float(d.get("baseVolume") or 0),
+                        "fee": abs(float(d.get("fee") or 0))}
+            if i < tries - 1:
+                time.sleep(1)
+        return None
+
+    def last_closed(self, sym_raw: str) -> dict | None:
+        """該幣最近一筆已平倉位的交易所結算數字（含 funding 與開平手續費）。"""
+        sym = self.map_symbol(sym_raw)
+        out = self._req("GET", "/api/v2/mix/position/history-position",
+                        query=f"symbol={sym}&productType={self.product}&limit=1")
+        lst = (out.get("data") or {}).get("list") or []
+        if not lst:
+            return None
+        r = lst[0]
+        return {"close_price": float(r.get("closeAvgPrice") or 0),
+                "open_price": float(r.get("openAvgPrice") or 0),
+                "net": float(r.get("netProfit") or 0),        # 含 funding+費用的淨損益
+                "funding": float(r.get("totalFunding") or 0),
+                "fee": abs(float(r.get("openFee") or 0)) + abs(float(r.get("closeFee") or 0)),
+                "utime": int(r.get("utime") or 0)}
+
     # ---- 對帳 ----
     def positions(self) -> dict[str, float]:
         """交易所實際持倉 sym -> 帶方向 size, 供與本地帳本對帳。"""

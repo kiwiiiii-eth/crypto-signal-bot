@@ -21,6 +21,11 @@ class Position:
     exit_reason: str = ""         # "time" / "stop"
     pnl_bps: float | None = None
     pnl_usdt: float | None = None
+    # 實盤對帳（交易所真實數字, pnl_source="exchange" 時 pnl_usdt 為 Bitget 結算淨利）
+    order_id: str = ""
+    fee_usdt: float | None = None
+    funding_usdt: float | None = None
+    pnl_source: str = "model"
 
 
 @dataclass
@@ -122,6 +127,8 @@ class Ledger:
                 "fr_at_entry": p.fr_at_entry, "exit_minute": p.exit_minute,
                 "exit_price": p.exit_price, "exit_reason": p.exit_reason,
                 "pnl_bps": p.pnl_bps, "pnl_usdt": p.pnl_usdt,
+                "order_id": p.order_id, "fee_usdt": p.fee_usdt,
+                "funding_usdt": p.funding_usdt, "pnl_source": p.pnl_source,
             }
         return {"open": [_pos(p) for p in self.open_positions],
                 "closed": [_pos(p) for p in self.closed],
@@ -140,6 +147,10 @@ class Ledger:
             p.exit_reason = r.get("exit_reason", "")
             p.pnl_bps = r.get("pnl_bps")
             p.pnl_usdt = r.get("pnl_usdt")
+            p.order_id = r.get("order_id", "")
+            p.fee_usdt = r.get("fee_usdt")
+            p.funding_usdt = r.get("funding_usdt")
+            p.pnl_source = r.get("pnl_source", "model")
             return p
         self.open_positions = [_pos(r) for r in d.get("open", [])]
         self.closed = [_pos(r) for r in d.get("closed", [])]
