@@ -119,6 +119,15 @@ class BitgetExecutor:
         pp = int(self.contracts[sym]["pricePlace"])
         return f"{px:.{pp}f}"
 
+    def funding_rate(self, sym_raw: str) -> float | None:
+        """Bitget 當期資金費率（實際收付發生在這裡, 不是訊號源 Binance）。"""
+        sym = self.map_symbol(sym_raw)
+        url = (f"{BASE}/api/v2/mix/market/current-fund-rate"
+               f"?symbol={sym}&productType={self.product}")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            d = json.loads(r.read()).get("data") or []
+        return float(d[0]["fundingRate"]) if d else None
+
     def ticker(self, sym: str) -> dict:
         """Bitget 盤口: last/bid/ask（公開接口, 無需簽名）。"""
         url = f"{BASE}/api/v2/mix/market/ticker?symbol={sym}&productType={self.product}"

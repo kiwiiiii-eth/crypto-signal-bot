@@ -20,20 +20,22 @@ def _fmt_ts(minute: int) -> str:
     return datetime.fromtimestamp(minute * 60, tz=TPE).strftime("%Y-%m-%d %H:%M")
 
 
-def format_signal(sig: Signal, flagship: bool = False) -> str:
+def format_signal(sig: Signal, flagship: bool = False, extra: str = "") -> str:
     side = "做空" if sig.side < 0 else "做多"
     emoji = "🔻" if sig.side < 0 else "🔺"
     head = f"{emoji} *{sig.strategy}｜{STRAT_LABEL[sig.strategy]} {side}*"
     if flagship:
         head = "🏴 *旗艦訊號（A+B 同時觸發）*\n" + head
-    return (
+    body = (
         f"{head}\n\n"
         f"交易對: `{sig.symbol}`\n"
         f"進場價: `{sig.price:.6g}`\n"
         f"預定出場: {sig.hold_min} 分鐘後（固定時間平倉）\n"
         f"觸發: {sig.note}\n"
-        f"🕒 {_fmt_ts(sig.minute)} (Asia/Taipei)"
     )
+    if extra:
+        body += f"{extra}\n"
+    return body + f"🕒 {_fmt_ts(sig.minute)} (Asia/Taipei)"
 
 
 def format_close(pos: Position, day_pnl_usdt: float) -> str:
@@ -67,8 +69,8 @@ class Notifier:
             f"https://api.telegram.org/bot{self.cfg.token}/sendMessage", data=data)
         urllib.request.urlopen(req, timeout=10)
 
-    def signal(self, sig: Signal, flagship: bool = False) -> None:
-        self.send(format_signal(sig, flagship), self.cfg.thread_signals)
+    def signal(self, sig: Signal, flagship: bool = False, extra: str = "") -> None:
+        self.send(format_signal(sig, flagship, extra), self.cfg.thread_signals)
 
     def close(self, pos: Position, day_pnl_usdt: float) -> None:
         self.send(format_close(pos, day_pnl_usdt), self.cfg.thread_fills)
