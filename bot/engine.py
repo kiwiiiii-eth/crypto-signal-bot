@@ -143,7 +143,7 @@ class LiveEngine:
             self.notifier.signal(sig, flagship=flagship)
 
     def run(self):
-        print(f"Demo 模擬盤啟動: {len(self.feed.universe)} 幣 "
+        print(f"啟動({self.cfg.exec_.mode}): {len(self.feed.universe)} 幣 "
               f"單筆 {self.cfg.risk.margin_usdt:.0f}U×{self.cfg.risk.leverage:.0f}x "
               f"停損 -{self.cfg.risk.disaster_stop_bps/100:.0f}%", file=sys.stderr)
         if self.cfg.tg.token:

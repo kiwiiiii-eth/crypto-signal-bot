@@ -46,13 +46,17 @@ class CommandServer:
     def cmd_status(self) -> str:
         e = self.engine
         up = (time.time() - self.started) / 3600
-        return (f"🤖 *Demo 模擬盤運行中*\n\n"
+        mode = {"live": "🔴 實盤", "demo": "🟡 Bitget模擬", "paper": "🟢 純模擬"}.get(
+            e.cfg.exec_.mode, e.cfg.exec_.mode)
+        return (f"🤖 *運行中｜{mode}*\n\n"
                 f"運行時間: `{up:.1f} h`\n"
                 f"監控幣數: `{len(e.feed.universe)}`\n"
                 f"最後 tick: {datetime.fromtimestamp((e.feed.last_minute or 0)*60, tz=TPE):%H:%M}\n"
                 f"單筆: `{e.cfg.risk.margin_usdt:.0f}U × {e.cfg.risk.leverage:.0f}x = "
                 f"{e.cfg.risk.margin_usdt*e.cfg.risk.leverage:.0f}U 名目`\n"
-                f"停損: `-{e.cfg.risk.disaster_stop_bps/100:.0f}%`｜出場: 固定時間 (A 1h / B 4h)\n"
+                f"停損: `-{e.cfg.risk.disaster_stop_bps/100:.0f}%`(交易所端)｜"
+                f"出場: E 3h / F・G 6h\n"
+                f"保證金上限: `{e.cfg.risk.margin_cap_usdt:.0f}U`\n"
                 f"倉位: `{len(e.ledger.open_positions)}` 開放｜累計平倉 `{len(e.ledger.closed)}`")
 
     def cmd_positions(self) -> str:
@@ -95,19 +99,60 @@ class CommandServer:
                   for p in e.ledger.open_positions}
         upnl = e.ledger.unrealized({k: v for k, v in prices.items() if v})
         eq = e.cfg.risk.equity_usdt + e.ledger.total_pnl_usdt + upnl
-        margin_used = len(e.ledger.open_positions) * e.cfg.risk.margin_usdt
-        return (f"🏦 *總權益*\n\n"
-                f"初始本金: `{e.cfg.risk.equity_usdt:.2f}`\n"
-                f"已實現: `{e.ledger.total_pnl_usdt:+.2f}`\n"
-                f"未實現: `{upnl:+.2f}`\n"
-                f"*權益: `{eq:.2f} USDT`（{(eq/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n"
-                f"保證金占用: `{margin_used:.0f}` / 可用 `{eq-margin_used:.2f}`")
+        margin_used = sum(p.notional_usdt / e.cfg.risk.leverage
+                          for p in e.ledger.open_positions)
+        out = (f"🏦 *總權益*\n\n"
+               f"初始本金: `{e.cfg.risk.equity_usdt:.2f}`\n"
+               f"已實現: `{e.ledger.total_pnl_usdt:+.2f}`\n"
+               f"未實現: `{upnl:+.2f}`\n"
+               f"*權益(帳本): `{eq:.2f} USDT`（{(eq/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n"
+               f"保證金占用: `{margin_used:.1f}` / 上限 `{e.cfg.risk.margin_cap_usdt:.0f}`")
+        if e.executor:
+            try:
+                out += f"\n交易所實際權益: `{e.executor.equity():.2f} USDT`"
+            except Exception as ex:
+                out += f"\n交易所權益查詢失敗: {ex}"
+        return out
+
+    def cmd_chart(self, arg: str = "") -> str | None:
+        """有持倉時: /chart 全部倉位各一張圖; /chart XVG 只畫該幣。"""
+        e = self.engine
+        poss = e.ledger.open_positions
+        if arg:
+            a = arg.upper()
+            poss = [p for p in poss if a in p.signal.symbol]
+        if not poss:
+            return "📭 無符合的持倉"
+        from .charts import position_chart, send_photo
+        now_min = int(time.time() // 60)
+        sent = 0
+        for p in poss[:6]:  # 一次最多 6 張
+            path = position_chart(p, e.cfg.risk.disaster_stop_bps)
+            if path is None:
+                continue
+            px = e.feed.price(p.signal.symbol)
+            upnl = (p.notional_usdt * (px / p.entry_price - 1) * p.signal.side
+                    if px else 0.0)
+            left = max(0, p.exit_due - now_min)
+            cap = (f"`{p.signal.symbol}` {p.signal.strategy}"
+                   f"{'空' if p.signal.side < 0 else '多'}  "
+                   f"未實現 `{upnl:+.2f}U`  剩 `{left}m`")
+            try:
+                send_photo(self.token, self.chat_id, path, caption=cap)
+                sent += 1
+            except Exception:
+                pass
+        return None if sent else "⚠️ 圖表產生失敗（K 線抓不到）"
 
     HELP = ("📖 指令:\n/status 運行狀態\n/positions 目前倉位\n"
-            "/pnl 已實現損益\n/equity 總權益\n/help 本說明")
+            "/chart [幣] 持倉走勢圖\n/pnl 已實現損益\n/equity 總權益\n/help 本說明")
 
     def handle(self, text: str) -> str | None:
-        cmd = text.split("@")[0].split()[0].lower() if text else ""
+        parts = text.split() if text else []
+        cmd = parts[0].split("@")[0].lower() if parts else ""
+        arg = parts[1] if len(parts) > 1 else ""
+        if cmd == "/chart":
+            return self.cmd_chart(arg)
         return {
             "/status": self.cmd_status, "/positions": self.cmd_positions,
             "/pnl": self.cmd_pnl, "/equity": self.cmd_equity,
