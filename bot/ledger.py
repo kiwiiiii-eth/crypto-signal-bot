@@ -47,6 +47,10 @@ class Ledger:
         if any(p.signal.symbol == sig.symbol for p in self.open_positions):
             self._reject("同幣持倉中")
             return None
+        used = sum(p.notional_usdt / self.risk.leverage for p in self.open_positions)
+        if used + self.risk.margin_usdt * size_mult > self.risk.margin_cap_usdt:
+            self._reject("保證金上限")
+            return None
         self.cooldown_until[key] = sig.minute + cooldown_min
         pos = Position(
             signal=sig,

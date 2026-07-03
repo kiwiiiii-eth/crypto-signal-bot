@@ -76,6 +76,17 @@ class RiskCfg:
     max_positions: int = _i("MAX_POSITIONS", 8)     # 每策略獨立上限
     # 重放掃描: -3% 會砍掉 25% 的單且多數會回來; -8% 觸發率 8%、EV 幾乎不損, 尾部保護仍在
     disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
+    # 全策略合計保證金上限 (24 倉滿載會超過本金, 交易所會拒單; 預設 = 本金 9 成)
+    margin_cap_usdt: float = _f("TOTAL_MARGIN_CAP", _f("EQUITY_USDT", 1000.0) * 0.9)
+
+
+@dataclass(frozen=True)
+class ExecCfg:
+    # paper: 純模擬 / demo: Bitget Demo API key (paptrading:1) / live: 真錢
+    mode: str = os.getenv("EXECUTION_MODE", "paper")
+    api_key: str = os.getenv("BITGET_API_KEY", "")
+    api_secret: str = os.getenv("BITGET_API_SECRET", "")
+    passphrase: str = os.getenv("BITGET_PASSPHRASE", "")
 
 
 @dataclass(frozen=True)
@@ -95,6 +106,7 @@ class Settings:
     d: StrategyDCfg = field(default_factory=StrategyDCfg)
     regime: RegimeCfg = field(default_factory=RegimeCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
+    exec_: ExecCfg = field(default_factory=ExecCfg)
     tg: TelegramCfg = field(default_factory=TelegramCfg)
     influx_url: str = os.getenv("INFLUXDB_URL", "http://localhost:8086")
     influx_token: str = os.getenv("INFLUXDB_TOKEN", "")

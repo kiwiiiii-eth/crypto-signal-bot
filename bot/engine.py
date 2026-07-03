@@ -36,6 +36,13 @@ class LiveEngine:
             print(f"還原狀態: {len(self.ledger.open_positions)} 開倉 "
                   f"{len(self.ledger.closed)} 歷史", file=sys.stderr)
         self.notifier = Notifier(self.cfg.tg, dry_run=not self.cfg.tg.token)
+        self.executor = None
+        if self.cfg.exec_.mode in {"demo", "live"}:
+            from .executor import BitgetExecutor
+            self.executor = BitgetExecutor(self.cfg.exec_, self.cfg.risk)
+            self.executor.setup_account()
+            print(f"Bitget 執行器啟用: mode={self.cfg.exec_.mode} "
+                  f"權益={self.executor.equity():.2f}U", file=sys.stderr)
         self.strat_a, self.strat_b = StrategyA(self.cfg.a), StrategyB(self.cfg.b)
         self.strat_c = StrategyC(self.cfg.c) if self.cfg.c.enabled else None
         self.strat_d = StrategyD(self.cfg.d) if self.cfg.d.enabled else None
@@ -52,6 +59,11 @@ class LiveEngine:
             if px is not None:
                 prices[pos.signal.symbol] = px
         for pos in self.ledger.mark(minute, prices):
+            if self.executor:
+                try:
+                    self.executor.close(pos)
+                except Exception as e:
+                    self.notifier.send(f"🚨 實盤平倉失敗 `{pos.signal.symbol}`: {e}\n請手動檢查交易所倉位")
             day = datetime.fromtimestamp(pos.exit_minute * 60, tz=TPE).date().isoformat()
             self.day_pnl[day] = self.day_pnl.get(day, 0.0) + (pos.pnl_usdt or 0)
             self.notifier.close(pos, self.day_pnl[day])
@@ -118,6 +130,14 @@ class LiveEngine:
         frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
         pos = self.ledger.try_open(sig, cooldown, fr=frv, size_mult=size_mult)
         if pos is not None:
+            if self.executor:
+                try:
+                    self.executor.open(pos)
+                except Exception as e:
+                    # 真單失敗 → 撤掉帳本倉位, 帳本必須與交易所一致
+                    self.ledger.open_positions.remove(pos)
+                    self.notifier.send(f"⚠️ 實盤開倉失敗 `{sym}`: {e}")
+                    return
             flagship = (sig.strategy == "E" and frv >= self.cfg.b.fr_threshold) or \
                        (sig.strategy == "G" and frv <= -self.cfg.b.fr_threshold)
             self.notifier.signal(sig, flagship=flagship)
