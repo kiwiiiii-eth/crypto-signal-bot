@@ -29,12 +29,29 @@ class ExecError(Exception):
 
 
 class BitgetExecutor:
+    """mode=demo 走 Bitget 模擬盤環境: productType=SUSDT-FUTURES、幣對 S<base>SUSDT、
+    保證金幣 SUSDT（僅 BTC/ETH/XRP 三幣對, 只夠驗證下單鏈, 跑不了全策略）。"""
+
     def __init__(self, cfg: ExecCfg, risk: RiskCfg):
         self.cfg = cfg
         self.risk = risk
         self._prepped: set[str] = set()  # 已設定逐倉+槓桿的幣
-        raw = json.loads((DATA_DIR / "bitget_contracts.json").read_text())["data"]
+        if cfg.mode == "demo":
+            self.product, self.margin_coin = "SUSDT-FUTURES", "SUSDT"
+            with urllib.request.urlopen(
+                    f"{BASE}/api/v2/mix/market/contracts?productType={self.product}",
+                    timeout=10) as r:
+                raw = json.loads(r.read())["data"]
+        else:
+            self.product, self.margin_coin = PRODUCT, "USDT"
+            raw = json.loads((DATA_DIR / "bitget_contracts.json").read_text())["data"]
         self.contracts = {r["symbol"]: r for r in raw}
+
+    def map_symbol(self, sym: str) -> str:
+        """引擎用正式盤符號 (TLMUSDT); demo 環境轉 S 前綴 (STLMSUSDT)。"""
+        if self.cfg.mode != "demo":
+            return sym
+        return f"S{sym[:-4]}SUSDT" if sym.endswith("USDT") else sym
 
     # ---- 簽名與請求 ----
     def _req(self, method: str, path: str, body: dict | None = None,
@@ -69,7 +86,7 @@ class BitgetExecutor:
     # ---- 帳戶/幣種前置 ----
     def setup_account(self) -> None:
         self._req("POST", "/api/v2/mix/account/set-position-mode",
-                  {"productType": PRODUCT, "posMode": "one_way_mode"})
+                  {"productType": self.product, "posMode": "one_way_mode"})
 
     def _prep_symbol(self, sym: str) -> None:
         if sym in self._prepped:
@@ -78,13 +95,13 @@ class BitgetExecutor:
         lev = int(min(self.risk.leverage, float(c["maxLever"]))) if c else int(self.risk.leverage)
         try:
             self._req("POST", "/api/v2/mix/account/set-margin-mode",
-                      {"symbol": sym, "productType": PRODUCT,
-                       "marginCoin": "USDT", "marginMode": "isolated"})
+                      {"symbol": sym, "productType": self.product,
+                       "marginCoin": self.margin_coin, "marginMode": "isolated"})
         except ExecError as e:  # 有持倉時不能改, 模式本來就對則無妨
             print(f"set-margin-mode {sym}: {e}", file=sys.stderr)
         self._req("POST", "/api/v2/mix/account/set-leverage",
-                  {"symbol": sym, "productType": PRODUCT,
-                   "marginCoin": "USDT", "leverage": str(lev)})
+                  {"symbol": sym, "productType": self.product,
+                   "marginCoin": self.margin_coin, "leverage": str(lev)})
         self._prepped.add(sym)
 
     # ---- 數量/價格精度 ----
@@ -104,15 +121,15 @@ class BitgetExecutor:
 
     # ---- 開/平倉 ----
     def open(self, pos: Position) -> str:
-        sym = pos.signal.symbol
+        sym = self.map_symbol(pos.signal.symbol)
         if sym not in self.contracts:
             raise ExecError(f"{sym} 不在 Bitget 合約表")
         self._prep_symbol(sym)
         size = self._round_size(sym, pos.notional_usdt, pos.entry_price)
         stop_px = pos.entry_price * (1 - pos.signal.side * self.risk.disaster_stop_bps / 10000)
         body = {
-            "symbol": sym, "productType": PRODUCT, "marginMode": "isolated",
-            "marginCoin": "USDT", "size": str(size),
+            "symbol": sym, "productType": self.product, "marginMode": "isolated",
+            "marginCoin": self.margin_coin, "size": str(size),
             "side": "buy" if pos.signal.side > 0 else "sell",
             "orderType": "market",
             "presetStopLossPrice": self._round_price(sym, stop_px),
@@ -123,12 +140,12 @@ class BitgetExecutor:
 
     def close(self, pos: Position) -> str | None:
         """市價全平（reduceOnly, 冪等: 交易所停損已先平則吞掉 no-position 錯誤）。"""
-        sym = pos.signal.symbol
+        sym = self.map_symbol(pos.signal.symbol)
         c = self.contracts[sym]
         size = self._round_size(sym, pos.notional_usdt, pos.exit_price or pos.entry_price)
         body = {
-            "symbol": sym, "productType": PRODUCT, "marginMode": "isolated",
-            "marginCoin": "USDT", "size": str(size),
+            "symbol": sym, "productType": self.product, "marginMode": "isolated",
+            "marginCoin": self.margin_coin, "size": str(size),
             "side": "sell" if pos.signal.side > 0 else "buy",
             "orderType": "market", "reduceOnly": "YES",
         }
@@ -144,7 +161,7 @@ class BitgetExecutor:
     def positions(self) -> dict[str, float]:
         """交易所實際持倉 sym -> 帶方向 size, 供與本地帳本對帳。"""
         out = self._req("GET", "/api/v2/mix/position/all-position",
-                        query=f"productType={PRODUCT}&marginCoin=USDT")
+                        query=f"productType={self.product}&marginCoin={self.margin_coin}")
         res = {}
         for p in out.get("data", []):
             sz = float(p.get("total", 0))
@@ -154,8 +171,8 @@ class BitgetExecutor:
 
     def equity(self) -> float:
         out = self._req("GET", "/api/v2/mix/account/accounts",
-                        query=f"productType={PRODUCT}")
+                        query=f"productType={self.product}")
         for a in out.get("data", []):
-            if a.get("marginCoin") == "USDT":
+            if a.get("marginCoin") == self.margin_coin:
                 return float(a.get("accountEquity", 0))
         return 0.0
