@@ -156,14 +156,12 @@ class LiveEngine:
         if pos is not None:
             if self.executor:
                 try:
-                    oid = self.executor.open(pos)
-                    pos.order_id = oid
-                    info = self.executor.fill_info(sym, oid)
-                    if info:  # 用真實成交均價/名目/開倉手續費覆蓋
-                        pos.entry_price = info["price"]
-                        if info["size"] > 0:
-                            pos.notional_usdt = info["price"] * info["size"]
-                        pos.fee_usdt = info["fee"]
+                    res = self.executor.open(pos)
+                    pos.order_id = res["orderId"]
+                    if res["size"] > 0:  # 真實成交均價/名目/開倉手續費(可能部分成交)
+                        pos.entry_price = res["price"]
+                        pos.notional_usdt = res["price"] * res["size"]
+                    pos.fee_usdt = res["fee"]
                 except Exception as e:
                     # 真單失敗 → 撤掉帳本倉位, 帳本必須與交易所一致
                     self.ledger.open_positions.remove(pos)

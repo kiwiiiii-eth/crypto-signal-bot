@@ -89,6 +89,11 @@ class ExecCfg:
     passphrase: str = os.getenv("BITGET_PASSPHRASE", "")
     # 開倉前 Bitget 盤口 vs Binance 訊號價偏差上限, 超過即棄單（避免追價/兩所脫鉤）
     max_dev_bps: float = _f("MAX_PRICE_DEV_BPS", 50.0)
+    # maker 優先: post-only 貼盤口掛單, 逾時撤單重新貼價再掛（maker 2bps vs taker 6bps）
+    maker_first: bool = os.getenv("MAKER_FIRST", "true").lower() in {"1", "true", "yes"}
+    maker_wait_sec: float = _f("MAKER_WAIT_SEC", 30.0)
+    entry_chase: int = _i("ENTRY_CHASE", 3)    # 開倉追掛輪數, 掛不到=棄單(不吃市價)
+    close_chase: int = _i("CLOSE_CHASE", 10)   # 平倉追掛輪數, 用盡才市價兜底
 
 
 @dataclass(frozen=True)

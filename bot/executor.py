@@ -127,14 +127,124 @@ class BitgetExecutor:
         return {"last": float(d["lastPr"]),
                 "bid": float(d.get("bidPr") or 0), "ask": float(d.get("askPr") or 0)}
 
+    # ---- 下單核心 ----
+    def _place(self, sym: str, side: str, size: float, order_type: str,
+               price: float | None = None, post_only: bool = False,
+               reduce: bool = False, stop_px: float | None = None,
+               client_oid: str | None = None) -> str:
+        body = {
+            "symbol": sym, "productType": self.product, "marginMode": "isolated",
+            "marginCoin": self.margin_coin, "size": str(size),
+            "side": side, "orderType": order_type,
+        }
+        if price is not None:
+            body["price"] = self._round_price(sym, price)
+        if post_only:
+            body["force"] = "post_only"
+        if reduce:
+            body["reduceOnly"] = "YES"
+        if stop_px is not None:
+            body["presetStopLossPrice"] = self._round_price(sym, stop_px)
+        if client_oid:
+            body["clientOid"] = client_oid
+        out = self._req("POST", "/api/v2/mix/order/place-order", body)
+        return out["data"]["orderId"]
+
+    def _detail(self, sym: str, order_id: str) -> dict:
+        out = self._req("GET", "/api/v2/mix/order/detail",
+                        query=f"symbol={sym}&productType={self.product}&orderId={order_id}")
+        return out.get("data") or {}
+
+    def _cancel(self, sym: str, order_id: str) -> None:
+        try:
+            self._req("POST", "/api/v2/mix/order/cancel-order",
+                      {"symbol": sym, "productType": self.product, "orderId": order_id})
+        except ExecError:
+            pass  # 撤單瞬間剛好成交 → 後面 _detail 會看到 filled
+
+    def _floor_size(self, sym: str, size: float) -> float:
+        c = self.contracts[sym]
+        step = float(c["sizeMultiplier"])
+        return round(size // step * step, int(c["volumePlace"]))
+
+    def _execute(self, sym: str, side: str, size: float, ref_px: float,
+                 chase: int, market_fallback: bool,
+                 reduce: bool = False, stop_px: float | None = None,
+                 client_oid: str | None = None) -> dict:
+        """純 maker 執行: post-only 貼盤口, 逾時撤單重新貼價, 追掛 chase 輪。
+        market_fallback=True 時(僅平倉)用盡輪數才市價兜底。
+        回傳聚合成交 {orderId, price, size, fee}。"""
+        fills: list[tuple[float, float, float]] = []  # (px, sz, fee)
+        remaining, main_oid = size, ""
+        min_num = float(self.contracts[sym]["minTradeNum"])
+
+        def _collect(oid: str) -> float:
+            d = self._detail(sym, oid)
+            fz = float(d.get("baseVolume") or 0)
+            if fz > 0:
+                fills.append((float(d.get("priceAvg") or ref_px), fz,
+                              abs(float(d.get("fee") or 0))))
+            return fz
+
+        rounds = chase if self.cfg.maker_first else 0
+        for rd in range(rounds):
+            if remaining < min_num:
+                break
+            try:
+                tk = self.ticker(sym)
+                join = (tk["bid"] if side == "buy" else tk["ask"]) or tk["last"]
+                oid = self._place(sym, side, remaining, "limit", price=join,
+                                  post_only=True, reduce=reduce, stop_px=stop_px,
+                                  client_oid=f"{client_oid}-{rd}" if client_oid else None)
+            except ExecError as e:
+                # post-only 會穿價被拒 → 盤口動了, 下一輪重新貼價
+                print(f"maker 掛單被拒({rd + 1}/{rounds}) {sym}: {e}", file=sys.stderr)
+                time.sleep(2)
+                continue
+            main_oid = main_oid or oid
+            deadline = time.time() + self.cfg.maker_wait_sec
+            state = ""
+            while time.time() < deadline:
+                time.sleep(2)
+                state = self._detail(sym, oid).get("state", "")
+                if state in {"filled", "canceled", "cancelled"}:
+                    break
+            if state != "filled":
+                self._cancel(sym, oid)
+                time.sleep(1)
+            remaining = self._floor_size(sym, max(0.0, remaining - _collect(oid)))
+
+        if remaining >= min_num:
+            if not market_fallback:
+                if not fills:
+                    raise ExecError(f"{sym} maker {rounds} 輪未成交, 棄單")
+                print(f"{sym} maker 部分成交 {size - remaining}/{size}, "
+                      f"殘量放棄", file=sys.stderr)
+            else:
+                oid = self._place(sym, side, remaining, "market", reduce=reduce,
+                                  stop_px=stop_px,
+                                  client_oid=f"{client_oid}-mkt" if client_oid else None)
+                main_oid = main_oid or oid
+                for _ in range(5):
+                    time.sleep(1)
+                    if _collect(oid):
+                        break
+        elif not fills:
+            raise ExecError(f"{sym} 無任何成交")
+
+        tot = sum(sz for _, sz, _ in fills)
+        avg = sum(px * sz for px, sz, _ in fills) / tot if tot else ref_px
+        return {"orderId": main_oid, "price": avg, "size": tot,
+                "fee": sum(f for _, _, f in fills)}
+
     # ---- 開/平倉 ----
-    def open(self, pos: Position) -> str:
+    def open(self, pos: Position) -> dict:
         sym = self.map_symbol(pos.signal.symbol)
         if sym not in self.contracts:
             raise ExecError(f"{sym} 不在 Bitget 合約表")
         # 盤口比價: Binance 訊號價 vs Bitget 現價, 偏差過大=已被追走或兩所脫鉤 → 棄單
         tk = self.ticker(sym)
-        # 市價單實際會吃的一側: 買吃 ask、賣吃 bid
+        # 實際成交參考: 買看 ask、賣看 bid
         exec_px = (tk["ask"] if pos.signal.side > 0 else tk["bid"]) or tk["last"]
         dev_bps = (exec_px / pos.entry_price - 1) * 10000
         # 不利方向 = 買得更貴 / 賣(空)得更便宜
@@ -146,33 +256,28 @@ class BitgetExecutor:
         # 數量與停損以 Bitget 實際盤口為基準, 而非 Binance 訊號價
         size = self._round_size(sym, pos.notional_usdt, exec_px)
         stop_px = exec_px * (1 - pos.signal.side * self.risk.disaster_stop_bps / 10000)
-        body = {
-            "symbol": sym, "productType": self.product, "marginMode": "isolated",
-            "marginCoin": self.margin_coin, "size": str(size),
-            "side": "buy" if pos.signal.side > 0 else "sell",
-            "orderType": "market",
-            "presetStopLossPrice": self._round_price(sym, stop_px),
-            "clientOid": f"esig-{pos.signal.strategy}-{pos.entry_minute}",
-        }
-        out = self._req("POST", "/api/v2/mix/order/place-order", body)
-        return out["data"]["orderId"]
+        # 開倉: 純 maker, 追掛 entry_chase 輪掛不到就棄單, 絕不吃市價
+        return self._execute(sym, "buy" if pos.signal.side > 0 else "sell", size,
+                             exec_px, chase=self.cfg.entry_chase, market_fallback=False,
+                             stop_px=stop_px,
+                             client_oid=f"esig-{pos.signal.strategy}-{pos.entry_minute}")
 
     def close(self, pos: Position) -> str | None:
-        """市價全平（reduceOnly, 冪等: 交易所停損已先平則吞掉 no-position 錯誤）。"""
+        """全平（maker 優先→市價, reduceOnly, 冪等: 停損已先平則吞 no-position）。"""
         sym = self.map_symbol(pos.signal.symbol)
-        c = self.contracts[sym]
-        size = self._round_size(sym, pos.notional_usdt, pos.exit_price or pos.entry_price)
-        body = {
-            "symbol": sym, "productType": self.product, "marginMode": "isolated",
-            "marginCoin": self.margin_coin, "size": str(size),
-            "side": "sell" if pos.signal.side > 0 else "buy",
-            "orderType": "market", "reduceOnly": "YES",
-        }
+        held = self.positions().get(sym)
+        if not held:  # 已被交易所停損單平掉
+            return None
+        size = self._floor_size(sym, abs(held))
         try:
-            out = self._req("POST", "/api/v2/mix/order/place-order", body)
-            return out["data"]["orderId"]
+            # 平倉: maker 追掛 close_chase 輪, 用盡才市價兜底(倉位不能裸奔)
+            res = self._execute(sym, "sell" if pos.signal.side > 0 else "buy",
+                                size, pos.exit_price or pos.entry_price,
+                                chase=self.cfg.close_chase, market_fallback=True,
+                                reduce=True)
+            return res["orderId"]
         except ExecError as e:
-            if "22002" in str(e) or "No position" in str(e):  # 已被停損單平掉
+            if "22002" in str(e) or "No position" in str(e):
                 return None
             raise
 
