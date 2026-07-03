@@ -105,7 +105,7 @@ class CommandServer:
                f"初始本金: `{e.cfg.risk.equity_usdt:.2f}`\n"
                f"已實現: `{e.ledger.total_pnl_usdt:+.2f}`\n"
                f"未實現: `{upnl:+.2f}`\n"
-               f"*權益(帳本): `{eq:.2f} USDT`（{(eq/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n"
+               f"*權益(帳本): {eq:.2f} USDT（{(eq/e.cfg.risk.equity_usdt-1)*100:+.2f}%）*\n"
                f"保證金占用: `{margin_used:.1f}` / 上限 `{e.cfg.risk.margin_cap_usdt:.0f}`")
         if e.executor:
             try:
