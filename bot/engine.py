@@ -149,7 +149,9 @@ class LiveEngine:
         if self.cfg.tg.token:
             from .commands import CommandServer
             CommandServer(self.cfg.tg.token, self.cfg.tg.chat_id, self).start()
-            self.notifier.send("🤖 Demo 模擬盤啟動（真實行情、模擬下單）\n/help 看指令")
+            mode_txt = {"live": "🔴 實盤（Bitget 真單）", "demo": "🟡 Bitget 模擬盤",
+                        "paper": "🟢 純模擬"}.get(self.cfg.exec_.mode, self.cfg.exec_.mode)
+            self.notifier.send(f"🤖 啟動｜{mode_txt}\n/help 看指令")
         import os
         if os.getenv("HL_WATCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
             from .hl_watch import HLWatcher
