@@ -142,7 +142,10 @@ class LiveEngine:
             elif kind == "open_fail":
                 if pos in self.ledger.open_positions:
                     self.ledger.open_positions.remove(pos)
-                self.notifier.send(f"⚠️ 實盤開倉失敗 `{pos.signal.symbol}`: {extra}")
+                side = "空" if pos.signal.side < 0 else "多"
+                self.notifier.send(
+                    f"⚠️ 開倉失敗｜*{pos.signal.strategy} {side}* `{pos.signal.symbol}`\n"
+                    f"訊號價 `{pos.signal.price:.6g}`｜{pos.signal.note}\n{extra}")
             elif kind == "close_done":
                 self._book_close(pos)
             elif kind == "close_fail":
