@@ -21,6 +21,8 @@ from .strategies import StrategyA, StrategyB, StrategyC, StrategyD
 TPE = timezone(timedelta(hours=8))
 STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+PAUSE_FILE = DATA_DIR / "paused.flag"
+KILL_FILE = DATA_DIR / "kill.flag"
 
 
 class LiveEngine:
@@ -54,6 +56,10 @@ class LiveEngine:
         self.strat_d = StrategyD(self.cfg.d) if self.cfg.d.enabled else None
         self.last_alert: dict[str, int] = {}  # A 的警報級冷卻（任何 OI 警報）
         self.day_pnl: dict = {}
+        self._safety_notice = ""
+        self._last_equity_check = 0.0
+        self._last_equity = None
+        self._reconcile_alerted: set[str] = set()
 
     def _save(self):
         STATE_FILE.write_text(json.dumps(self.ledger.to_dict()))
@@ -169,7 +175,7 @@ class LiveEngine:
         return (f"🐳 HL大戶: {longs}多/{shorts}空 "
                 f"淨{'多' if net > 0 else '空'} `{abs(net) / 1e6:.2f}M`")
 
-    def _reconcile_close(self, pos):
+    def _reconcile_close(self, pos) -> bool:
         """平倉後用 Bitget 結算數字覆蓋帳本（真實出場價/手續費/funding/淨損益）。"""
         for _ in range(5):
             time.sleep(1)
@@ -189,8 +195,90 @@ class LiveEngine:
                 if pos.notional_usdt:
                     pos.pnl_bps = r["net"] / pos.notional_usdt * 10000
                 pos.pnl_source = "exchange"
-                return
+                return True
+        pos.pnl_source = "pending"
         print(f"對帳失敗(沿用模擬值): {pos.signal.symbol}", file=sys.stderr)
+        key = f"{pos.signal.symbol}|{pos.entry_minute}"
+        if key not in self._reconcile_alerted:
+            self._reconcile_alerted.add(key)
+            self.notifier.send(f"🚨 平倉對帳未完成 `{pos.signal.symbol}`｜"
+                               f"{pos.signal.strategy}｜先沿用模型值，將自動重試")
+        return False
+
+    def _retry_pending_reconciles(self):
+        if not self.executor:
+            return
+        pending = [p for p in self.ledger.closed if p.pnl_source == "pending"]
+        for pos in pending[:5]:
+            before = pos.pnl_usdt
+            if self._reconcile_close(pos):
+                self.notifier.send(
+                    f"✅ 對帳補回 `{pos.signal.symbol}`｜"
+                    f"{before:+.2f}U → `{pos.pnl_usdt:+.2f}U`")
+
+    def today_closed(self, day=None):
+        day = day or datetime.now(TPE).date()
+        return [p for p in self.ledger.closed if p.exit_minute and
+                datetime.fromtimestamp(p.exit_minute * 60, tz=TPE).date() == day]
+
+    def risk_snapshot(self) -> dict:
+        closed = self.today_closed()
+        realized = sum(p.pnl_usdt or 0 for p in closed)
+        stops = sum(1 for p in closed if p.exit_reason in {"stop", "liq"})
+        pending = sum(1 for p in self.ledger.closed if p.pnl_source == "pending")
+        equity = self._last_equity
+        if self.executor and time.time() - self._last_equity_check > 60:
+            try:
+                equity = self.executor.equity()
+                self._last_equity = equity
+                self._last_equity_check = time.time()
+            except Exception:
+                pass
+        return {"realized": realized, "stops": stops, "pending": pending,
+                "equity": equity, "paused": PAUSE_FILE.exists(),
+                "killed": KILL_FILE.exists()}
+
+    def safety_reason(self) -> str:
+        if KILL_FILE.exists():
+            return KILL_FILE.read_text().strip() or "manual kill-switch"
+        if PAUSE_FILE.exists():
+            return PAUSE_FILE.read_text().strip() or "manual pause"
+        snap = self.risk_snapshot()
+        if snap["realized"] <= -abs(self.cfg.risk.daily_loss_limit_usdt):
+            return (f"今日已實現 {snap['realized']:+.2f}U <= "
+                    f"-{abs(self.cfg.risk.daily_loss_limit_usdt):.2f}U")
+        if snap["stops"] >= self.cfg.risk.daily_stop_limit:
+            return f"今日停損 {snap['stops']} 筆 >= {self.cfg.risk.daily_stop_limit}"
+        if snap["equity"] is not None and snap["equity"] <= self.cfg.risk.equity_floor_usdt:
+            return (f"交易所權益 {snap['equity']:.2f}U <= "
+                    f"{self.cfg.risk.equity_floor_usdt:.2f}U")
+        return ""
+
+    def set_pause(self, reason: str = "manual pause"):
+        PAUSE_FILE.write_text(reason)
+
+    def resume(self):
+        if PAUSE_FILE.exists():
+            PAUSE_FILE.unlink()
+        self._safety_notice = ""
+
+    def kill(self, reason: str = "manual kill-switch"):
+        KILL_FILE.write_text(reason)
+
+    def strategy_stats(self, day=None) -> dict[str, dict]:
+        rows = self.today_closed(day) if day else self.ledger.closed
+        out: dict[str, dict] = {}
+        for p in rows:
+            d = out.setdefault(p.signal.strategy,
+                               {"n": 0, "wins": 0, "pnl": 0.0, "bps": 0.0,
+                                "fees": 0.0, "funding": 0.0})
+            d["n"] += 1
+            d["wins"] += int((p.pnl_usdt or 0) > 0)
+            d["pnl"] += p.pnl_usdt or 0.0
+            d["bps"] += p.pnl_bps or 0.0
+            d["fees"] += p.fee_usdt or 0.0
+            d["funding"] += p.funding_usdt or 0.0
+        return out
 
     def _process_signals(self, minute: int):
         w = self.cfg.a.window_min
@@ -233,6 +321,12 @@ class LiveEngine:
                     self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.c.cooldown_min)
 
     def _try_open(self, sig, minute: int, sym: str, px, oi, fr, i: int, cooldown: int):
+        reason = self.safety_reason()
+        if reason:
+            if reason != self._safety_notice:
+                self._safety_notice = reason
+                self.notifier.send(f"🛑 風控暫停開新倉: {reason}")
+            return
         mom = getattr(self, "_btc_mom", None)
         oi_usd = float(oi[i] * px[i]) if not (np.isnan(oi[i]) or np.isnan(px[i])) else None
         size_mult = 1.0
@@ -298,7 +392,8 @@ class LiveEngine:
             from .hl_watch import HLWatcher
             self.hl = HLWatcher(self.notifier,
                                 poll_min=int(os.getenv("HL_POLL_MIN", "5")),
-                                top_n=int(os.getenv("HL_TOP_N", "60")))
+                                top_n=int(os.getenv("HL_TOP_N", "60")),
+                                tracked=[a.strip() for a in os.getenv("HL_TRACKED", "").split(",") if a.strip()])
             self.hl.start()
         self._report_day = datetime.now(TPE).date().isoformat()
         while True:
@@ -308,6 +403,7 @@ class LiveEngine:
                 self._drain_exec()
                 self.feed.tick(minute)
                 self._process_closes(minute)
+                self._retry_pending_reconciles()
                 self._process_signals(minute)
                 self._save()
                 self._maybe_daily_report()
@@ -332,6 +428,13 @@ class LiveEngine:
                f"淨損益: `{pnl:+.2f} USDT`\n"
                f"手續費: `-{fees:.4f}`｜funding: `{fund:+.4f}`\n"
                f"目前持倉: `{len(self.ledger.open_positions)}`")
+        stats = self.strategy_stats(datetime.fromisoformat(day).date())
+        if stats:
+            msg += "\n\n策略:"
+            for strat, d in sorted(stats.items()):
+                avg = d["bps"] / d["n"] if d["n"] else 0
+                msg += (f"\n`{strat}` {d['n']}單 勝{d['wins']} "
+                        f"PnL `{d['pnl']:+.2f}U` 均 `{avg:+.0f}bps`")
         if self.executor:
             try:
                 msg += f"\n交易所權益: `{self.executor.equity():.2f} USDT`"

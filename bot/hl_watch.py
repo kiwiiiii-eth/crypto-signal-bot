@@ -23,6 +23,12 @@ LEADERBOARD = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 INFO = "https://api.hyperliquid.xyz/info"
 
 
+def addr_links(addr: str) -> str:
+    return (f"[Hypurrscan](https://hypurrscan.io/address/{addr}) | "
+            f"[HyperDash](https://hyperdash.info/trader/{addr}) | "
+            f"[HL App](https://app.hyperliquid.xyz/explorer/address/{addr})")
+
+
 def _post(payload: dict, timeout: float = 15):
     req = urllib.request.Request(INFO, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
@@ -76,13 +82,45 @@ def fetch_positions(addr: str) -> dict[str, float]:
     return out
 
 
+def daily_digest(addr: str) -> str:
+    """單一地址的真實績效日報：已實現+未實現一起看，戳破「只平獲利單」的假勝率。"""
+    st = _post({"type": "clearinghouseState", "user": addr})
+    ms = st["marginSummary"]
+    lines = [f"📋 *HL 追蹤日報* `{addr[:8]}`"]
+    upnl_total = 0.0
+    for p in st.get("assetPositions", []):
+        q = p["position"]
+        szi = float(q["szi"])
+        if szi == 0:
+            continue
+        upnl = float(q["unrealizedPnl"])
+        upnl_total += upnl
+        side = "多" if szi > 0 else "空"
+        lines.append(f"  {q['coin']} {side} `{abs(float(q['positionValue']))/1e6:.2f}M` "
+                     f"{q['leverage']['value']}x 未實現 `{upnl:+,.0f}`")
+    pf = _post({"type": "portfolio", "user": addr})
+    for period, label in (("day", "24h"), ("week", "7日"), ("month", "30日")):
+        d = dict(pf).get(period)
+        if not d or not d.get("pnlHistory"):
+            continue
+        h = d["pnlHistory"]
+        av = d["accountValueHistory"]
+        lines.append(f"  {label} PnL `{float(h[-1][1]) - float(h[0][1]):+,.0f}` "
+                     f"帳戶 `{float(av[-1][1])/1e6:.2f}M`")
+    lines.append(f"  未實現合計 `{upnl_total:+,.0f}`")
+    lines.append(addr_links(addr))
+    return "\n".join(lines)
+
+
 class HLWatcher:
     def __init__(self, notifier, poll_min: int = 5, top_n: int = 60,
-                 min_notional: float = 500_000):
+                 min_notional: float = 500_000, tracked: list[str] | None = None):
         self.notifier = notifier
         self.poll_min = poll_min
         self.top_n = top_n
         self.min_notional = min_notional  # 小於此名目的變動不推播（快照照存）
+        self.tracked = tracked or []  # 每日推真實績效日報的地址
+        self.digest_day = ""
         self.watchlist: list[str] = []
         self.prev: dict[str, dict[str, float]] = {}
         self.list_refreshed = 0.0
@@ -115,7 +153,7 @@ class HLWatcher:
             elif abs(n) < abs(o) * 0.5:
                 msg = f"🐳 `{tag}` *{coin} {side}* 減倉 `{abs(o)/1e6:.2f}M→{abs(n)/1e6:.2f}M`"
             if msg:
-                self.notifier.send(msg)
+                self.notifier.send(msg + "\n" + addr_links(addr))
 
     def _loop(self):
         while True:
@@ -124,6 +162,15 @@ class HLWatcher:
                     self.watchlist = build_watchlist(self.top_n)
                     self.list_refreshed = time.time()
                     print(f"HL 名單刷新: {len(self.watchlist)} 地址", file=sys.stderr)
+                day = time.strftime("%Y-%m-%d", time.localtime())
+                if self.tracked and day != self.digest_day:
+                    self.digest_day = day
+                    for a in self.tracked:
+                        try:
+                            self.notifier.send(daily_digest(a))
+                        except Exception as e:
+                            print(f"HL 日報錯誤 {a[:8]}: {e}", file=sys.stderr)
+                        time.sleep(0.3)
                 ts = int(time.time())
                 for addr in self.watchlist:
                     try:
