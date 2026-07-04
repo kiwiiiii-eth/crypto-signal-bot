@@ -85,8 +85,14 @@ class BitgetExecutor:
 
     # ---- 帳戶/幣種前置 ----
     def setup_account(self) -> None:
-        self._req("POST", "/api/v2/mix/account/set-position-mode",
-                  {"productType": self.product, "posMode": "one_way_mode"})
+        try:
+            self._req("POST", "/api/v2/mix/account/set-position-mode",
+                      {"productType": self.product, "posMode": "one_way_mode"})
+        except ExecError as e:
+            # 40920: 有持倉/掛單（含手動單）時不能切換; 模式先前已是 one_way, 照常啟動
+            if "40920" not in str(e):
+                raise
+            print(f"set-position-mode 略過: {e}", file=sys.stderr)
 
     def _prep_symbol(self, sym: str) -> None:
         if sym in self._prepped:
@@ -271,6 +277,15 @@ class BitgetExecutor:
                              stop_px=stop_px,
                              client_oid=f"esig-{pos.signal.strategy}-{pos.entry_minute}")
 
+    def _flash_close(self, sym: str) -> None:
+        """市價閃電全平（不受 minTradeNum 限制）, 用來掃掉 maker 殘量灰塵倉。"""
+        try:
+            self._req("POST", "/api/v2/mix/order/close-positions",
+                      {"symbol": sym, "productType": self.product})
+        except ExecError as e:
+            if "22002" not in str(e) and "No position" not in str(e):
+                raise
+
     def close(self, pos: Position) -> str | None:
         """全平（maker 優先→市價, reduceOnly, 冪等: 停損已先平則吞 no-position）。"""
         sym = self.map_symbol(pos.signal.symbol)
@@ -278,17 +293,25 @@ class BitgetExecutor:
         if not held:  # 已被交易所停損單平掉
             return None
         size = self._floor_size(sym, abs(held))
-        try:
-            # 平倉: maker 追掛 close_chase 輪, 用盡才市價兜底(倉位不能裸奔)
-            res = self._execute(sym, "sell" if pos.signal.side > 0 else "buy",
-                                size, pos.exit_price or pos.entry_price,
-                                chase=self.cfg.close_chase, market_fallback=True,
-                                reduce=True)
-            return res["orderId"]
-        except ExecError as e:
-            if "22002" in str(e) or "No position" in str(e):
+        oid = None
+        if size > 0:
+            try:
+                # 平倉: maker 追掛 close_chase 輪, 用盡才市價兜底(倉位不能裸奔)
+                res = self._execute(sym, "sell" if pos.signal.side > 0 else "buy",
+                                    size, pos.exit_price or pos.entry_price,
+                                    chase=self.cfg.close_chase, market_fallback=True,
+                                    reduce=True)
+                oid = res["orderId"]
+            except ExecError as e:
+                if "22002" not in str(e) and "No position" not in str(e):
+                    raise
                 return None
-            raise
+        # 殘量掃尾: 部分成交剩 < minTradeNum、或 floor 捨去的尾數, 一律閃電平掉
+        leftover = self.positions().get(sym)
+        if leftover:
+            print(f"{sym} 平倉後殘量 {leftover}, 閃電平倉掃尾", file=sys.stderr)
+            self._flash_close(sym)
+        return oid
 
     # ---- 真實成交回查 ----
     def fill_info(self, sym_raw: str, order_id: str, tries: int = 5) -> dict | None:
