@@ -5,13 +5,24 @@
   /positions — 目前倉位與未實現損益
   /pnl       — 已實現損益（今日/累計）
   /equity    — 總權益 = 初始 + 已實現 + 未實現
+  /risk      — 風控狀態
+  /pause     — 暫停開新倉
+  /resume    — 恢復開新倉
+  /kill      — 停止開新倉直到人工清除 kill.flag
+  /perf      — 策略績效
+  /trend     — 4H/1D EMA 趨勢檢查
+  /trend_chart — 4H/1D EMA 趨勢圖
+  /market_chart — Price/OI/Funding 市場結構圖
+  /reconcile — 重試 pending 對帳
   /help
 """
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -27,6 +38,9 @@ class CommandServer:
         self.offset = 0
         self.started = time.time()
 
+    def _log(self, msg: str):
+        print(f"tg-command: {msg}", file=sys.stderr, flush=True)
+
     def _api(self, method: str, **params):
         data = urllib.parse.urlencode(params).encode()
         req = urllib.request.Request(f"https://api.telegram.org/bot{self.token}/{method}", data=data)
@@ -39,8 +53,11 @@ class CommandServer:
             params["message_thread_id"] = thread_id
         try:
             self._api("sendMessage", **params)
-        except Exception:
-            pass
+        except urllib.error.HTTPError as ex:
+            body = ex.read().decode("utf-8", "ignore")[:300]
+            self._log(f"reply failed: HTTP {ex.code}: {body}")
+        except Exception as ex:
+            self._log(f"reply failed: {type(ex).__name__}: {ex}")
 
     # ---- 指令實作 ----
     def cmd_status(self) -> str:
@@ -103,6 +120,98 @@ class CommandServer:
             out += f"\n⚠️ {model} 單為模擬估值（對帳未成）"
         return out
 
+    def cmd_risk(self) -> str:
+        e = self.engine
+        snap = e.risk_snapshot()
+        reason = e.safety_reason()
+        eq = snap["equity"]
+        eq_txt = f"`{eq:.2f} USDT`" if eq is not None else "`查詢中/不可用`"
+        return (f"🛡️ *風控狀態*\n\n"
+                f"今日已實現: `{snap['realized']:+.2f} USDT` / "
+                f"限制 `-{abs(e.cfg.risk.daily_loss_limit_usdt):.2f}`\n"
+                f"今日停損: `{snap['stops']}` / 限制 `{e.cfg.risk.daily_stop_limit}`\n"
+                f"權益底線: `{e.cfg.risk.equity_floor_usdt:.2f} USDT`\n"
+                f"交易所權益: {eq_txt}\n"
+                f"pending 對帳: `{snap['pending']}`\n"
+                f"狀態: `{reason or '允許開新倉'}`")
+
+    def cmd_perf(self, today_only: bool = False) -> str:
+        e = self.engine
+        stats = e.strategy_stats(datetime.now(TPE).date() if today_only else None)
+        if not stats:
+            return "📭 尚無平倉績效"
+        title = "今日策略績效" if today_only else "累計策略績效"
+        lines = [f"📊 *{title}*"]
+        for strat, d in sorted(stats.items()):
+            avg = d["bps"] / d["n"] if d["n"] else 0
+            win = d["wins"] / d["n"] * 100 if d["n"] else 0
+            lines.append(f"`{strat}` {d['n']}單｜勝率 `{win:.0f}%`｜"
+                         f"PnL `{d['pnl']:+.2f}U`｜均 `{avg:+.0f}bps`｜"
+                         f"fee `-{d['fees']:.4f}` funding `{d['funding']:+.4f}`")
+        return "\n".join(lines)
+
+    def cmd_reconcile(self) -> str:
+        e = self.engine
+        before = sum(1 for p in e.ledger.closed if p.pnl_source == "pending")
+        e._retry_pending_reconciles()
+        after = sum(1 for p in e.ledger.closed if p.pnl_source == "pending")
+        e._save()
+        return f"🔁 對帳重試完成｜pending `{before}` → `{after}`"
+
+    def cmd_trend(self, arg: str = "") -> str:
+        if not arg:
+            return "用法: `/trend TLM` 或 `/trend TLMUSDT`"
+        from .trend import trend_summary
+        e = self.engine
+        try:
+            return trend_summary(arg, e.cfg.coinglass.api_key, e.cfg.coinglass.exchange)
+        except Exception as ex:
+            return f"⚠️ 趨勢查詢失敗: {ex}"
+
+    def cmd_trend_chart(self, arg: str = "") -> str | None:
+        if not arg:
+            return "用法: `/trend_chart TLM` 或 `/trend_chart TLMUSDT`"
+        from .charts import send_photo, trend_chart
+        sym = arg.upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        try:
+            path = trend_chart(sym)
+            send_photo(self.token, self.chat_id, path, caption=f"`{sym}` 4H/1D EMA 趨勢")
+            return None
+        except Exception as ex:
+            return f"⚠️ 趨勢圖失敗: {ex}"
+
+    def cmd_market_chart(self, args: list[str]) -> str | None:
+        if not args:
+            return "用法: `/market_chart TLM 24h` 或 `/market_chart TLM 3d`"
+        from .charts import market_structure_chart, send_photo
+        e = self.engine
+        sym = args[0].upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        duration = args[1].lower() if len(args) > 1 else "24h"
+        influx = {
+            "url": e.cfg.influx_url,
+            "token": e.cfg.influx_token,
+            "org": e.cfg.influx_org,
+            "bucket": e.cfg.influx_bucket,
+        }
+        try:
+            path, summary = market_structure_chart(sym, duration, influx=influx, exchange="binance")
+            oi = summary["oi_chg_pct"]
+            fr = summary["funding_bps"]
+            oi_txt = f"{oi:+.2f}%" if oi is not None else "N/A"
+            fr_txt = f"{fr:+.2f}bps" if fr is not None else "N/A"
+            cap = (f"`{summary['symbol']}` {summary['duration'].upper()}｜{summary['state']}\n"
+                   f"Price `{summary['price_chg_pct']:+.2f}%`｜"
+                   f"OI `{oi_txt}`｜Funding `{fr_txt}`｜")
+            cap += f"points `{summary['points']}`"
+            send_photo(self.token, self.chat_id, path, caption=cap)
+            return None
+        except Exception as ex:
+            return f"⚠️ 市場結構圖失敗: {ex}"
+
     def cmd_equity(self) -> str:
         e = self.engine
         prices = {p.signal.symbol: e.feed.price(p.signal.symbol)
@@ -164,8 +273,15 @@ class CommandServer:
                 pass
         return None if sent else "⚠️ 圖表產生失敗（K 線抓不到）"
 
-    HELP = ("📖 指令:\n/status 運行狀態\n/positions 目前倉位\n"
-            "/chart [幣] 持倉走勢圖\n/pnl 已實現損益\n/equity 總權益\n/help 本說明")
+    HELP = ("📖 指令:\n"
+            "`/status` 運行狀態\n`/positions` 目前倉位\n"
+            "`/chart [幣]` 持倉走勢圖\n`/pnl` 已實現損益\n`/equity` 總權益\n"
+            "`/risk` 風控狀態\n`/perf` 累計策略績效\n`/perf_today` 今日策略績效\n"
+            "`/trend [幣]` 4H/1D EMA 趨勢\n`/trend_chart [幣]` 趨勢圖\n"
+            "`/market_chart [幣] [24h|3d]` Price/OI/Funding 結構圖\n"
+            "`/mchart [幣] [24h|3d]` 市場結構圖短指令\n`/reconcile` 重試對帳\n"
+            "`/pause` 暫停開新倉\n`/resume` 恢復開新倉\n"
+            "`/kill` 停止開新倉\n`/help` 本說明")
 
     def handle(self, text: str) -> str | None:
         parts = text.split() if text else []
@@ -173,9 +289,27 @@ class CommandServer:
         arg = parts[1] if len(parts) > 1 else ""
         if cmd == "/chart":
             return self.cmd_chart(arg)
+        if cmd == "/trend":
+            return self.cmd_trend(arg)
+        if cmd == "/trend_chart":
+            return self.cmd_trend_chart(arg)
+        if cmd in {"/market_chart", "/mchart"}:
+            return self.cmd_market_chart(parts[1:])
+        if cmd == "/pause":
+            self.engine.set_pause("telegram pause")
+            return "⏸️ 已暫停開新倉，既有倉位仍會照規則出場"
+        if cmd == "/resume":
+            self.engine.resume()
+            return "▶️ 已恢復開新倉"
+        if cmd == "/kill":
+            self.engine.kill("telegram kill-switch")
+            return "🛑 已啟動 kill-switch；需到 Server A 刪除 `data/kill.flag` 才會恢復"
         return {
             "/status": self.cmd_status, "/positions": self.cmd_positions,
             "/pnl": self.cmd_pnl, "/equity": self.cmd_equity,
+            "/risk": self.cmd_risk, "/perf": self.cmd_perf,
+            "/perf_today": lambda: self.cmd_perf(today_only=True),
+            "/reconcile": self.cmd_reconcile,
             "/help": lambda: self.HELP, "/start": lambda: self.HELP,
         }.get(cmd, lambda: None)()
 
@@ -187,12 +321,17 @@ class CommandServer:
                     self.offset = u["update_id"] + 1
                     msg = u.get("message") or {}
                     if str(msg.get("chat", {}).get("id")) != self.chat_id:
+                        self._log(f"ignore chat_id={msg.get('chat', {}).get('id')}")
                         continue
-                    reply = self.handle(msg.get("text", ""))
+                    text = msg.get("text", "")
+                    self._log(f"handle {text.split()[0] if text else '<empty>'} thread={msg.get('message_thread_id')}")
+                    reply = self.handle(text)
                     if reply:
                         self._reply(reply, msg.get("message_thread_id"))
-            except Exception:
+            except Exception as ex:
+                self._log(f"loop error: {type(ex).__name__}: {ex}")
                 time.sleep(5)
 
     def start(self):
+        self._log(f"start chat_id={self.chat_id}")
         threading.Thread(target=self._loop, daemon=True, name="tg-commands").start()

@@ -78,6 +78,10 @@ class RiskCfg:
     disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
     # 全策略合計保證金上限 (24 倉滿載會超過本金, 交易所會拒單; 預設 = 本金 9 成)
     margin_cap_usdt: float = _f("TOTAL_MARGIN_CAP", _f("EQUITY_USDT", 1000.0) * 0.9)
+    # live 風控閘門: 達標後停止開新倉, 既有倉位仍照規則出場
+    daily_loss_limit_usdt: float = _f("DAILY_LOSS_LIMIT_USDT", 5.0)
+    daily_stop_limit: int = _i("DAILY_STOP_LIMIT", 2)
+    equity_floor_usdt: float = _f("EQUITY_FLOOR_USDT", _f("EQUITY_USDT", 1000.0) * 0.92)
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,12 @@ class TelegramCfg:
 
 
 @dataclass(frozen=True)
+class CoinGlassCfg:
+    api_key: str = os.getenv("COINGLASS_API_KEY", "")
+    exchange: str = os.getenv("COINGLASS_EXCHANGE", "Binance")
+
+
+@dataclass(frozen=True)
 class Settings:
     a: StrategyACfg = field(default_factory=StrategyACfg)
     b: StrategyBCfg = field(default_factory=StrategyBCfg)
@@ -115,6 +125,7 @@ class Settings:
     risk: RiskCfg = field(default_factory=RiskCfg)
     exec_: ExecCfg = field(default_factory=ExecCfg)
     tg: TelegramCfg = field(default_factory=TelegramCfg)
+    coinglass: CoinGlassCfg = field(default_factory=CoinGlassCfg)
     influx_url: str = os.getenv("INFLUXDB_URL", "http://localhost:8086")
     influx_token: str = os.getenv("INFLUXDB_TOKEN", "")
     influx_org: str = os.getenv("INFLUXDB_ORG", "crypto")
