@@ -1,0 +1,8 @@
+{
+  "routes": [
+    {"type": "health.*", "min_severity": "warn", "channels": ["discord", "telegram"]},
+    {"type": "anomaly.*", "min_severity": "warn", "channels": ["discord"]},
+    {"type": "hermes.*", "min_severity": "info", "channels": ["discord"]},
+    {"type": "*", "min_severity": "crit", "channels": ["telegram"]}
+  ]
+}

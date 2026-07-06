@@ -137,16 +137,14 @@ def check_memory() -> list[str]:
     return []
 
 
-def send_telegram(text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        print(f"(no telegram configured) {text}", file=sys.stderr)
-        return
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
-    urllib.request.urlopen(
-        f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=15
-    ).read()
+def deliver(severity: str, title: str, lines: list[str]) -> None:
+    sys.path.insert(0, str(ROOT))
+    from reporter import Event, report
+
+    sent = report(Event(type="health.server-a", severity=severity,
+                        title=title, lines=lines))
+    if not sent:
+        print(f"(no channel delivered) {title}: {lines}", file=sys.stderr)
 
 
 def main() -> None:
@@ -171,11 +169,11 @@ def main() -> None:
     recovered = [p for p in state if p not in active]
 
     if to_alert:
-        send_telegram("⚠️ [health] Server A 健康檢查異常\n" + "\n".join(f"- {p}" for p in to_alert))
+        deliver("warn", "Server A 健康檢查異常", [f"- {p}" for p in to_alert])
         for p in to_alert:
             active[p] = now
     if recovered:
-        send_telegram("✅ [health] 已恢復\n" + "\n".join(f"- {p}" for p in recovered))
+        deliver("recovery", "已恢復", [f"- {p}" for p in recovered])
 
     STATE_FILE.parent.mkdir(exist_ok=True)
     STATE_FILE.write_text(json.dumps(active))
