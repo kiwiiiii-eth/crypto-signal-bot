@@ -4,8 +4,9 @@
 重放模式（paper trading 回放驗證）:
     python main.py replay <minute_last.csv> <funding_minute.csv> [trades_out.csv]
 
-實時模式（等新 InfluxDB 上線後接上）:
-    python main.py live   # TODO: InfluxFeed 每 60s 輪詢，走相同 check() 路徑
+實時模式（BinanceFeed 每 60s 一 tick, 與重放共用策略/帳本）:
+    python main.py live
+    # 下單行為由 EXECUTION_MODE 決定: paper(預設,純模擬) / demo(Bitget 模擬盤) / live(真錢)
 """
 import sys
 

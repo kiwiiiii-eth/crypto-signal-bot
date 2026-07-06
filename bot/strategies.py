@@ -15,7 +15,9 @@ from .config import StrategyACfg, StrategyBCfg, StrategyCCfg, StrategyDCfg
 
 @dataclass(frozen=True)
 class Signal:
-    strategy: str      # "A" / "B" / "C"
+    # 對外代號（Telegram/帳本/state.json 用這個）: E=StrategyA, F=StrategyB,
+    # G=StrategyD, C=StrategyC。類別名 A/B/C/D 是開發期編號, 詳見 docs/ARCHITECTURE.md
+    strategy: str      # "E" / "F" / "G" / "C"
     symbol: str
     side: int          # -1 = 做空
     minute: int        # epoch 分鐘
@@ -25,7 +27,7 @@ class Signal:
 
 
 class StrategyA:
-    """A｜3 分鐘 OI 減 ≥1.5% 且價漲 ≥1.5% → 做空 1h。"""
+    """E｜3 分鐘 OI 減 ≥1.5% 且價漲 ≥1.5% → 做空 A_HOLD_MIN 分鐘（預設 120 = 2h）。"""
 
     name = "E"
     label = "OI減價漲"

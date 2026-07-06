@@ -1,12 +1,17 @@
 # crypto-signal-bot
 
-逆勢做空訊號 bot（paper trading）。規格見 SecondBrain《Trading Bot 架構藍圖》§8。
+逆勢訊號交易 bot（Bitget USDT-M；EXECUTION_MODE=paper/demo/live）。規格見 SecondBrain《Trading Bot 架構藍圖》§8。
+架構與模組職責見 `docs/ARCHITECTURE.md`；開發守則見 `CLAUDE.md`。
 
-## 策略（E/F/G）
-- **E｜OI減價漲做空**：3m ΔOI≤-1.5% 且 Δ價≥+1.5% → 做空 1h（回測 淨+68bps、勝率66%）
+## 策略（E/F/G/C）
+- **E｜OI減價漲做空**：3m ΔOI≤-1.5% 且 Δ價≥+1.5% → 做空 `A_HOLD_MIN`（預設 2h）
 - **F｜極端正費率做空**：fr≥+0.1% → 做空 4h 收 carry，冷卻 8h（回測 淨+97bps、正日比88%）
+- **G｜OI增價跌做多**：3m ΔOI≥+1.5% 且 Δ價≤-1.5% → 做多 4h（E 鏡像，僅 BTC 4h 跌勢時）
 - **C｜1h異動逆勢**：預設關閉（`STRATEGY_C_ENABLED=true` 開啟）
-- A+B 同幣同時觸發 = 旗艦訊號 🏴
+- E+F 同幣同時觸發 = 旗艦訊號 🏴
+
+> 命名注意：程式類別名 `StrategyA/B/D/C` 是開發期編號，對外代號依序為 E/F/G/C；
+> 環境變數用類別編號（`A_HOLD_MIN`、`D_MIN_OI_USD`），推播與帳本用對外代號。
 
 ## 風控（回測定案，勿隨意加停利/緊停損）
 - 出場 = 固定持有時間；只掛災難停損 -8%（重放驗證: -3% 太緊會砍掉會回來的單）
