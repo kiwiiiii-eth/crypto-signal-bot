@@ -117,6 +117,12 @@ class RiskCfg:
     disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
     # 每組保證金上限 (G1/G2 各自獨立計算; 預設 = 組權益 9 成)
     margin_cap_usdt: float = _f("TOTAL_MARGIN_CAP", _f("EQUITY_USDT", 1000.0) * 0.9)
+    # 第二組(H/L)專屬: 倉位上限 25、名目固定(=基礎保證金x基礎槓桿=500U)、
+    # 保證金隨池子剩餘浮動縮小(槓桿反向浮動放大, 上限 20x → 保證金下限 25U)
+    g2_max_positions: int = _i("G2_MAX_POSITIONS", 25)
+    g2_max_leverage: float = _f("G2_MAX_LEVERAGE", 20.0)
+    # 強平模擬: 維持保證金率(Bitget 山寨約 0.4~1%, 取 0.5%)
+    maint_margin_rate: float = _f("MAINT_MARGIN_RATE", 0.005)
     # live 風控閘門: 達標後停止開新倉, 既有倉位仍照規則出場
     daily_loss_limit_usdt: float = _f("DAILY_LOSS_LIMIT_USDT", 5.0)
     daily_stop_limit: int = _i("DAILY_STOP_LIMIT", 2)

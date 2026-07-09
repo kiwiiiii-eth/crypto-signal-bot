@@ -41,7 +41,8 @@ def format_signal(sig: Signal, flagship: bool = False, extra: str = "") -> str:
 
 def format_close(pos: Position, day_pnl_usdt: float) -> str:
     emoji = "✅" if (pos.pnl_bps or 0) > 0 else "❌"
-    reason = {"time": "到時平倉", "stop": "災難停損"}.get(pos.exit_reason, pos.exit_reason)
+    reason = {"time": "到時平倉", "stop": "災難停損",
+              "liq": "強平(交易所價)"}.get(pos.exit_reason, pos.exit_reason)
     return (
         f"{emoji} *平倉回報｜{pos.signal.strategy}*\n\n"
         f"交易對: `{pos.signal.symbol}`\n"
