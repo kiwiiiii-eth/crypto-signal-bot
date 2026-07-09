@@ -40,3 +40,18 @@ python main.py live
 ## 定義備註
 - **OI 下限 = Binance 未平倉合約美元名目（張數×mark price, USD）**，非幣數、非 Bitget 數據。E 無下限、F ≥5M、G ≥1M。
 - 災難停損 -8%＝持倉最深逆行上限（MAE 掃描定案：更緊的水位會誤殺會回來的贏單，E 的贏單 P90 逆行達 7.2%）。
+
+## 策略分組（2026-07-10）
+
+| 組 | 策略 | 資金池 |
+|---|---|---|
+| 第一組 G1 | E/F/G/C（原有） | 獨立 1000U、5x、單筆保證金 100U（名目 500U） |
+| 第二組 G2 | H 擠多頂空、L 強平反抽（利率共鳴新策略） | 獨立 1000U、同上 |
+
+- 兩組保證金上限各自計算（`TOTAL_MARGIN_CAP` 各套一份），互不排擠。
+- H/L 為兩階段觸發（狀態達標 armed → 分鐘級扳機進場），全過程含條件實際值記錄於 `data/hl_triggers.jsonl`（armed/entered/expired/vetoed），供參數優化。
+- H 需要 24h 行情緩衝，重啟後約 24h 才會開始觸發（feed keep_min=1500）。
+- OKX 活期利率佐證層（`bot/lending.py`）：每分鐘 1 個公開請求，脫離 1% 地板 → H 加分並推 TG；L 在利率 z>2（空頭仍在借幣）時否決進場。
+- 日報與 `/performance` 皆分組對比（各組單數/勝率/PnL/虛擬權益）。
+- MFE/MAE（持有期最大浮盈/浮虧 bps）記錄於每筆 Position。
+- 研究依據：vault `10 Projects/Crypto/Lending Rate Strategy Candidates 2026-07-10.md`。

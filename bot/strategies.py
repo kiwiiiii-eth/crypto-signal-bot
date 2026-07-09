@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import StrategyACfg, StrategyBCfg, StrategyCCfg, StrategyDCfg
+from .config import (StrategyACfg, StrategyBCfg, StrategyCCfg, StrategyDCfg,
+                     StrategyHCfg, StrategyLCfg)
 
 
 @dataclass(frozen=True)
@@ -137,3 +138,126 @@ class StrategyC:
             return Signal(self.name, sym, side, i, float(px[i]), self.cfg.hold_min,
                           note=f"1h OI {d_oi:+.1f}% 價 {d_px:+.1f}% 逆勢")
         return None
+
+
+class StrategyH:
+    """H｜第二組·擠多頂做空: 24h漲≥8% + OI 24h增≥10% + 費率≥0.03% 進入 armed,
+    OI 自近 2h 高點回落 ≥2%（多頭撤退）觸發進場。空 24h。
+
+    兩階段有狀態: armed/低點追蹤存在實例內（僅實時模式用; 重放用 trigger_mask 近似,
+    只含狀態條件不含扳機）。依據: 分鐘級重放 +2.0%/24h 勝率64-67% (n=39)。
+    """
+
+    name = "H"
+    label = "擠多頂空"
+    window_min = 1440
+
+    def __init__(self, cfg: StrategyHCfg):
+        self.cfg = cfg
+        self.armed: dict[str, int] = {}  # sym -> armed 分鐘
+
+    def trigger_mask(self, px: np.ndarray, oi: np.ndarray, fr: np.ndarray) -> np.ndarray:
+        w = self.window_min
+        d_oi = np.full_like(px, np.nan)
+        d_px = np.full_like(px, np.nan)
+        d_oi[w:] = (oi[w:] / oi[:-w] - 1) * 100
+        d_px[w:] = (px[w:] / px[:-w] - 1) * 100
+        with np.errstate(invalid="ignore"):
+            return (d_px >= self.cfg.ret24_pct) & (d_oi >= self.cfg.doi24_pct) & \
+                   (fr >= self.cfg.fr_threshold)
+
+    def check(self, sym: str, px: np.ndarray, oi: np.ndarray, fr: np.ndarray,
+              i: int, minute: int) -> tuple[Signal | None, str]:
+        """回傳 (Signal|None, phase)。phase: '' / 'armed' / 'expired' 供觸發記錄用。"""
+        w = self.window_min
+        if i < w or np.isnan(px[i]) or np.isnan(px[i - w]) or \
+                np.isnan(oi[i]) or np.isnan(oi[i - w]) or oi[i - w] <= 0:
+            return None, ""
+        ret24 = (px[i] / px[i - w] - 1) * 100
+        doi24 = (oi[i] / oi[i - w] - 1) * 100
+        frv = fr[i] if not np.isnan(fr[i]) else 0.0
+        state_ok = (ret24 >= self.cfg.ret24_pct and doi24 >= self.cfg.doi24_pct
+                    and frv >= self.cfg.fr_threshold)
+        phase = ""
+        if state_ok and sym not in self.armed:
+            self.armed[sym] = minute
+            phase = "armed"
+        elif sym in self.armed and not state_ok and \
+                minute - self.armed[sym] > self.cfg.armed_ttl_min:
+            del self.armed[sym]
+            return None, "expired"
+        if sym not in self.armed:
+            return None, phase
+        # 扳機: OI 自近 2h 高點回落
+        lo = max(0, i - self.cfg.oi_high_window_min)
+        window = oi[lo:i + 1]
+        valid = window[~np.isnan(window)]
+        if len(valid) < 10:
+            return None, phase
+        oi_high = float(valid.max())
+        if oi[i] <= oi_high * (1 - self.cfg.oi_pullback_pct / 100):
+            del self.armed[sym]
+            note = f"24h {ret24:+.1f}% OI24h {doi24:+.1f}% fr {frv*100:+.3f}% OI回落"
+            return Signal(self.name, sym, -1, minute, float(px[i]),
+                          self.cfg.hold_min, note=note), "entered"
+        return None, phase
+
+
+class StrategyL:
+    """L｜第二組·強平反抽做多: 4h跌≥8% + OI 4h降≥5% 進入 armed 並追蹤低點,
+    30 分鐘未再創低（企穩）觸發進場。多 8h。利率 z>2（空頭仍在借幣）由引擎否決。
+
+    依據: 分鐘級重放 淨+0.6~1.0%/4-8h 勝率60-62% (n=233); 接飛刀本質,
+    4h 內最大浮虧中位 -2.6%, 停損 -8% 必須在。
+    """
+
+    name = "L"
+    label = "強平反抽"
+    window_min = 240
+
+    def __init__(self, cfg: StrategyLCfg):
+        self.cfg = cfg
+        self.armed: dict[str, int] = {}       # sym -> armed 分鐘
+        self.low: dict[str, tuple[float, int]] = {}  # sym -> (低點價, 低點分鐘)
+
+    def trigger_mask(self, px: np.ndarray, oi: np.ndarray, fr: np.ndarray) -> np.ndarray:
+        w = self.window_min
+        d_oi = np.full_like(px, np.nan)
+        d_px = np.full_like(px, np.nan)
+        d_oi[w:] = (oi[w:] / oi[:-w] - 1) * 100
+        d_px[w:] = (px[w:] / px[:-w] - 1) * 100
+        with np.errstate(invalid="ignore"):
+            return (d_px <= self.cfg.ret4_pct) & (d_oi <= self.cfg.doi4_pct)
+
+    def check(self, sym: str, px: np.ndarray, oi: np.ndarray, fr: np.ndarray,
+              i: int, minute: int) -> tuple[Signal | None, str]:
+        w = self.window_min
+        if i < w or np.isnan(px[i]) or np.isnan(px[i - w]) or \
+                np.isnan(oi[i]) or np.isnan(oi[i - w]) or oi[i - w] <= 0:
+            return None, ""
+        ret4 = (px[i] / px[i - w] - 1) * 100
+        doi4 = (oi[i] / oi[i - w] - 1) * 100
+        state_ok = ret4 <= self.cfg.ret4_pct and doi4 <= self.cfg.doi4_pct
+        phase = ""
+        if state_ok:
+            if sym not in self.armed:
+                self.armed[sym] = minute
+                self.low[sym] = (float(px[i]), minute)
+                phase = "armed"
+            elif px[i] < self.low[sym][0]:
+                self.low[sym] = (float(px[i]), minute)
+        if sym not in self.armed:
+            return None, phase
+        if minute - self.armed[sym] > self.cfg.armed_ttl_min:
+            del self.armed[sym]
+            self.low.pop(sym, None)
+            return None, "expired"
+        low_px, low_min = self.low[sym]
+        if minute - low_min >= self.cfg.stab_min:  # 企穩: N 分未創低
+            del self.armed[sym]
+            self.low.pop(sym, None)
+            note = (f"4h {ret4:+.1f}% OI4h {doi4:+.1f}% "
+                    f"{self.cfg.stab_min}分未創低(低點 {low_px:.6g})")
+            return Signal(self.name, sym, +1, minute, float(px[i]),
+                          self.cfg.hold_min, note=note), "entered"
+        return None, phase

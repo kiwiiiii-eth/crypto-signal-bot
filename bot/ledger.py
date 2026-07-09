@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .config import FEE_BPS, RiskCfg
+from .config import FEE_BPS, RiskCfg, strategy_group
 from .strategies import Signal
 
 
@@ -22,6 +22,9 @@ class Position:
     pnl_bps: float | None = None
     pnl_usdt: float | None = None
     # 實盤對帳（交易所真實數字, pnl_source="exchange" 時 pnl_usdt 為 Bitget 結算淨利）
+    # 持有期間最大浮盈/浮虧（bps, 分鐘級標記; 供停損/停利參數優化）
+    mfe_bps: float = 0.0
+    mae_bps: float = 0.0
     order_id: str = ""
     fee_usdt: float | None = None
     funding_usdt: float | None = None
@@ -52,9 +55,12 @@ class Ledger:
         if any(p.signal.symbol == sig.symbol for p in self.open_positions):
             self._reject("同幣持倉中")
             return None
-        used = sum(p.notional_usdt / self.risk.leverage for p in self.open_positions)
+        # 保證金上限按組獨立計算（G1=原有策略, G2=利率共鳴策略, 各 1 份組權益）
+        grp = strategy_group(sig.strategy)
+        used = sum(p.notional_usdt / self.risk.leverage for p in self.open_positions
+                   if strategy_group(p.signal.strategy) == grp)
         if used + self.risk.margin_usdt * size_mult > self.risk.margin_cap_usdt:
-            self._reject("保證金上限")
+            self._reject(f"保證金上限({grp})")
             return None
         self.cooldown_until[key] = sig.minute + cooldown_min
         pos = Position(
@@ -76,7 +82,10 @@ class Ledger:
             if px is None:
                 continue
             side = pos.signal.side
-            adverse_bps = -(px / pos.entry_price - 1) * 10000 * side
+            run_bps = (px / pos.entry_price - 1) * 10000 * side
+            pos.mfe_bps = max(pos.mfe_bps, run_bps)
+            pos.mae_bps = min(pos.mae_bps, run_bps)
+            adverse_bps = -run_bps
             if adverse_bps >= self.risk.disaster_stop_bps:
                 self._close(pos, minute, px, "stop")
                 done.append(pos)
@@ -127,6 +136,7 @@ class Ledger:
                 "fr_at_entry": p.fr_at_entry, "exit_minute": p.exit_minute,
                 "exit_price": p.exit_price, "exit_reason": p.exit_reason,
                 "pnl_bps": p.pnl_bps, "pnl_usdt": p.pnl_usdt,
+                "mfe_bps": p.mfe_bps, "mae_bps": p.mae_bps,
                 "order_id": p.order_id, "fee_usdt": p.fee_usdt,
                 "funding_usdt": p.funding_usdt, "pnl_source": p.pnl_source,
             }
@@ -147,6 +157,8 @@ class Ledger:
             p.exit_reason = r.get("exit_reason", "")
             p.pnl_bps = r.get("pnl_bps")
             p.pnl_usdt = r.get("pnl_usdt")
+            p.mfe_bps = r.get("mfe_bps", 0.0)
+            p.mae_bps = r.get("mae_bps", 0.0)
             p.order_id = r.get("order_id", "")
             p.fee_usdt = r.get("fee_usdt")
             p.funding_usdt = r.get("funding_usdt")

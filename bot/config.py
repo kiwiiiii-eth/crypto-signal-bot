@@ -60,6 +60,45 @@ class StrategyDCfg:  # OI增+價跌 → 做多（A 的鏡像: 空頭擁擠過度
 
 
 @dataclass(frozen=True)
+class StrategyHCfg:  # 擠多頂做空（第二組）: 24h漲+OI增+正費率 → OI回落扳機 → 空24h
+    # 依據: 2026-06-20→30 小時級+分鐘級重放, 淨+1.9%/24h 勝率64-67%, 詳見
+    # vault "Lending Rate Strategy Candidates 2026-07-10"
+    ret24_pct: float = _f("H_RET24_PCT", 8.0)        # 24h 漲幅門檻
+    doi24_pct: float = _f("H_DOI24_PCT", 10.0)       # OI 24h 增幅門檻
+    fr_threshold: float = _f("H_FR_THRESHOLD", 0.0003)  # 預估費率 0.03%
+    oi_pullback_pct: float = _f("H_OI_PULLBACK_PCT", 2.0)  # 扳機: OI 自近2h高點回落
+    oi_high_window_min: int = 120
+    armed_ttl_min: int = 720                          # armed 超過 12h 未觸發即撤銷
+    hold_min: int = _i("H_HOLD_MIN", 1440)
+    cooldown_min: int = 720
+    enabled: bool = os.getenv("STRATEGY_H_ENABLED", "true").lower() in {"1", "true", "yes"}
+
+
+@dataclass(frozen=True)
+class StrategyLCfg:  # 強平反抽做多（第二組）: 4h急殺+OI急降 → 30分未創低扳機 → 多8h
+    # 依據: 分鐘級重放 淨+0.6~1.0%/4-8h 勝率60-62% n=233; 做多必須等企穩,
+    # 但等超過60分會錯過反抽
+    ret4_pct: float = _f("L_RET4_PCT", -8.0)          # 4h 跌幅門檻
+    doi4_pct: float = _f("L_DOI4_PCT", -5.0)          # OI 4h 降幅門檻
+    stab_min: int = _i("L_STAB_MIN", 30)              # 企穩: N 分鐘未再創低
+    armed_ttl_min: int = 360                          # armed 超過 6h 未企穩即撤銷
+    lend_z_veto: float = _f("L_LEND_Z_VETO", 2.0)     # 利率飆升中(空頭仍在借幣)不接
+    hold_min: int = _i("L_HOLD_MIN", 480)
+    cooldown_min: int = 720
+    enabled: bool = os.getenv("STRATEGY_L_ENABLED", "true").lower() in {"1", "true", "yes"}
+
+
+# 策略分組: 第一組=原有策略, 第二組=利率共鳴新策略。兩組各自獨立資金池
+# (各 1000U 權益、5x、單筆保證金 100U → 名目 500U), 報表分組比較。
+STRATEGY_GROUPS: dict[str, str] = {"E": "G1", "F": "G1", "G": "G1", "C": "G1",
+                                   "H": "G2", "L": "G2"}
+
+
+def strategy_group(strategy: str) -> str:
+    return STRATEGY_GROUPS.get(strategy, "G1")
+
+
+@dataclass(frozen=True)
 class RegimeCfg:
     # A 空單: BTC 4h≤0 全倉(+171bps/正日比100%), >0 仍有+103 → 砍半不砍單
     btc_window_min: int = 240
@@ -70,13 +109,13 @@ class RegimeCfg:
 
 @dataclass(frozen=True)
 class RiskCfg:
-    equity_usdt: float = _f("EQUITY_USDT", 1000.0)
-    margin_usdt: float = _f("MARGIN_USDT", 50.0)    # 單筆保證金
-    leverage: float = _f("LEVERAGE", 5.0)           # 名目 = 保證金 × 槓桿
+    equity_usdt: float = _f("EQUITY_USDT", 1000.0)  # 每組獨立權益(G1/G2 各一份)
+    margin_usdt: float = _f("MARGIN_USDT", 100.0)   # 單筆保證金
+    leverage: float = _f("LEVERAGE", 5.0)           # 名目 = 保證金 × 槓桿 (100U×5=500U)
     max_positions: int = _i("MAX_POSITIONS", 8)     # 每策略獨立上限
     # 重放掃描: -3% 會砍掉 25% 的單且多數會回來; -8% 觸發率 8%、EV 幾乎不損, 尾部保護仍在
     disaster_stop_bps: float = _f("DISASTER_STOP_BPS", 800.0)
-    # 全策略合計保證金上限 (24 倉滿載會超過本金, 交易所會拒單; 預設 = 本金 9 成)
+    # 每組保證金上限 (G1/G2 各自獨立計算; 預設 = 組權益 9 成)
     margin_cap_usdt: float = _f("TOTAL_MARGIN_CAP", _f("EQUITY_USDT", 1000.0) * 0.9)
     # live 風控閘門: 達標後停止開新倉, 既有倉位仍照規則出場
     daily_loss_limit_usdt: float = _f("DAILY_LOSS_LIMIT_USDT", 5.0)
@@ -121,6 +160,8 @@ class Settings:
     b: StrategyBCfg = field(default_factory=StrategyBCfg)
     c: StrategyCCfg = field(default_factory=StrategyCCfg)
     d: StrategyDCfg = field(default_factory=StrategyDCfg)
+    h: StrategyHCfg = field(default_factory=StrategyHCfg)
+    l: StrategyLCfg = field(default_factory=StrategyLCfg)
     regime: RegimeCfg = field(default_factory=RegimeCfg)
     risk: RiskCfg = field(default_factory=RiskCfg)
     exec_: ExecCfg = field(default_factory=ExecCfg)

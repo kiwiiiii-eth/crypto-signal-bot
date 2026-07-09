@@ -12,11 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import EXCLUDED_TOKENS, Settings
+from .config import EXCLUDED_TOKENS, Settings, strategy_group
 from .feed import BinanceFeed, binance_usdt_perps
 from .ledger import Ledger
 from .notifier import Notifier
-from .strategies import StrategyA, StrategyB, StrategyC, StrategyD
+from .strategies import StrategyA, StrategyB, StrategyC, StrategyD, StrategyH, StrategyL
 
 TPE = timezone(timedelta(hours=8))
 STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
@@ -34,7 +34,8 @@ class LiveEngine:
         universe = {s for s in universe if not s.endswith("USDC")}
         if bitget:
             universe &= bitget
-        self.feed = BinanceFeed(universe)
+        keep_min = 1500 if (self.cfg.h.enabled or self.cfg.l.enabled) else 300
+        self.feed = BinanceFeed(universe, keep_min=keep_min)
         self.ledger = Ledger(self.cfg.risk)
         if STATE_FILE.exists():
             self.ledger.restore(json.loads(STATE_FILE.read_text()))
@@ -54,6 +55,14 @@ class LiveEngine:
         self.strat_a, self.strat_b = StrategyA(self.cfg.a), StrategyB(self.cfg.b)
         self.strat_c = StrategyC(self.cfg.c) if self.cfg.c.enabled else None
         self.strat_d = StrategyD(self.cfg.d) if self.cfg.d.enabled else None
+        # 第二組（利率共鳴）: H 擠多頂空 / L 強平反抽, 附 OKX 活期利率佐證層
+        self.strat_h = StrategyH(self.cfg.h) if self.cfg.h.enabled else None
+        self.strat_l = StrategyL(self.cfg.l) if self.cfg.l.enabled else None
+        self.lending = None
+        if self.strat_h or self.strat_l:
+            from .lending import LendingTracker
+            self.lending = LendingTracker(notify=self.notifier.send)
+            self.lending.bootstrap_async({s[:-4] for s in self.feed.universe})
         self.last_alert: dict[str, int] = {}  # A 的警報級冷卻（任何 OI 警報）
         self.day_pnl: dict = {}
         self._safety_notice = ""
@@ -280,6 +289,25 @@ class LiveEngine:
             d["funding"] += p.funding_usdt or 0.0
         return out
 
+    def group_stats(self, day=None) -> dict[str, dict]:
+        """兩組對比: G1=原有策略(E/F/G/C), G2=利率共鳴(H/L)。各組獨立 1000U 權益。"""
+        rows = self.today_closed(day) if day else self.ledger.closed
+        out = {"G1": {"n": 0, "wins": 0, "pnl": 0.0, "bps": 0.0},
+               "G2": {"n": 0, "wins": 0, "pnl": 0.0, "bps": 0.0}}
+        for p in rows:
+            d = out[strategy_group(p.signal.strategy)]
+            d["n"] += 1
+            d["wins"] += int((p.pnl_usdt or 0) > 0)
+            d["pnl"] += p.pnl_usdt or 0.0
+            d["bps"] += p.pnl_bps or 0.0
+        for grp, d in out.items():
+            d["equity"] = self.cfg.risk.equity_usdt + sum(
+                p.pnl_usdt or 0 for p in self.ledger.closed
+                if strategy_group(p.signal.strategy) == grp)
+            d["open"] = sum(1 for p in self.ledger.open_positions
+                            if strategy_group(p.signal.strategy) == grp)
+        return out
+
     def _process_signals(self, minute: int):
         w = self.cfg.a.window_min
         self._btc_mom = self.feed.bench_momentum(self.cfg.regime.btc_window_min)
@@ -319,6 +347,24 @@ class LiveEngine:
                 sig = self.strat_c.check(sym, px, oi, fr, i)
                 if sig is not None:
                     self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.c.cooldown_min)
+            # 第二組: H / L（兩階段觸發, armed/entered/expired 全記錄到 hl_triggers.jsonl）
+            if self.strat_h:
+                sig, phase = self.strat_h.check(sym, px, oi, fr, i, minute)
+                if phase or sig:
+                    self._log_hl_trigger("H", sym, phase or "entered", px, oi, fr, i, minute)
+                if sig is not None:
+                    self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.h.cooldown_min)
+            if self.strat_l:
+                sig, phase = self.strat_l.check(sym, px, oi, fr, i, minute)
+                if phase or sig:
+                    self._log_hl_trigger("L", sym, phase or "entered", px, oi, fr, i, minute)
+                if sig is not None:
+                    lz = self.lending.z(sym[:-4]) if self.lending else None
+                    if lz is not None and lz > self.cfg.l.lend_z_veto:
+                        self._log_hl_trigger("L", sym, "vetoed", px, oi, fr, i, minute,
+                                             extra={"lend_z": round(lz, 2)})
+                    else:
+                        self._try_open(sig, minute, sym, px, oi, fr, i, self.cfg.l.cooldown_min)
 
     def _try_open(self, sig, minute: int, sym: str, px, oi, fr, i: int, cooldown: int):
         reason = self.safety_reason()
@@ -358,6 +404,10 @@ class LiveEngine:
                 if sig.strategy in {"E", "G"} and bfr * sig.side >= self.cfg.b.fr_threshold:
                     print(f"{sig.strategy} 棄單 {sym}: Bitget fr={bfr:+.4%} 倒貼", file=sys.stderr)
                     return
+        if sig.strategy == "H" and self.lending:
+            pts, desc = self.lending.score(sym[:-4], minute)
+            sig = type(sig)(sig.strategy, sym, sig.side, sig.minute, sig.price,
+                            sig.hold_min, f"{sig.note}｜利率 {desc} 分數{pts}")
         sig = type(sig)(sig.strategy, sym, sig.side, minute, sig.price, sig.hold_min, sig.note)
         frv = float(fr[i]) if not np.isnan(fr[i]) else 0.0
         pos = self.ledger.try_open(sig, cooldown, fr=frv, size_mult=size_mult)
@@ -376,6 +426,30 @@ class LiveEngine:
             else:
                 self.notifier.signal(sig, flagship=flagship,
                                      extra=self._hl_note(sym))
+
+    def _log_hl_trigger(self, strat: str, sym: str, phase: str, px, oi, fr, i: int,
+                        minute: int, extra: dict | None = None):
+        """第二組兩階段觸發全記錄（含條件實際值）→ data/hl_triggers.jsonl, 供參數優化。"""
+        try:
+            w = 1440 if strat == "H" else 240
+            rec = {"ts": minute * 60, "strategy": strat, "symbol": sym, "phase": phase,
+                   "price": round(float(px[i]), 8),
+                   "ret_w": round((float(px[i] / px[i - w]) - 1) * 100, 3)
+                   if i >= w and px[i - w] > 0 else None,
+                   "doi_w": round((float(oi[i] / oi[i - w]) - 1) * 100, 3)
+                   if i >= w and oi[i - w] > 0 else None,
+                   "fr": round(float(fr[i]), 6) if not np.isnan(fr[i]) else None}
+            if self.lending:
+                ccy = sym[:-4]
+                rec["lend_rate"] = self.lending.rate.get(ccy)
+                lz = self.lending.z(ccy)
+                rec["lend_z"] = round(lz, 2) if lz is not None else None
+            if extra:
+                rec.update(extra)
+            with (DATA_DIR / "hl_triggers.jsonl").open("a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"hl_trigger 記錄失敗: {e}", file=sys.stderr)
 
     def run(self):
         print(f"啟動({self.cfg.exec_.mode}): {len(self.feed.universe)} 幣 "
@@ -402,6 +476,8 @@ class LiveEngine:
             try:
                 self._drain_exec()
                 self.feed.tick(minute)
+                if self.lending:
+                    self.lending.tick(minute)
                 self._process_closes(minute)
                 self._retry_pending_reconciles()
                 self._process_signals(minute)
@@ -435,6 +511,13 @@ class LiveEngine:
                 avg = d["bps"] / d["n"] if d["n"] else 0
                 msg += (f"\n`{strat}` {d['n']}單 勝{d['wins']} "
                         f"PnL `{d['pnl']:+.2f}U` 均 `{avg:+.0f}bps`")
+        gs = self.group_stats()
+        msg += "\n\n組別對比(累計, 各1000U):"
+        for grp, label in (("G1", "第一組 E/F/G/C"), ("G2", "第二組 H/L")):
+            d = gs[grp]
+            win = d["wins"] / d["n"] * 100 if d["n"] else 0
+            msg += (f"\n`{grp}` {label}: {d['n']}單 勝率{win:.0f}% "
+                    f"PnL `{d['pnl']:+.2f}U` 權益 `{d['equity']:.2f}U` 持倉{d['open']}")
         if self.executor:
             try:
                 msg += f"\n交易所權益: `{self.executor.equity():.2f} USDT`"

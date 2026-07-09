@@ -142,12 +142,25 @@ class CommandServer:
             return "📭 尚無平倉績效"
         title = "今日策略績效" if today_only else "累計策略績效"
         lines = [f"📊 *{title}*"]
-        for strat, d in sorted(stats.items()):
-            avg = d["bps"] / d["n"] if d["n"] else 0
+        from bot.config import strategy_group
+        for grp, label in (("G1", "第一組（原有 E/F/G/C）"), ("G2", "第二組（利率共鳴 H/L）")):
+            grp_stats = {k: v for k, v in stats.items() if strategy_group(k) == grp}
+            if not grp_stats:
+                continue
+            lines.append(f"\n*{label}*")
+            for strat, d in sorted(grp_stats.items()):
+                avg = d["bps"] / d["n"] if d["n"] else 0
+                win = d["wins"] / d["n"] * 100 if d["n"] else 0
+                lines.append(f"`{strat}` {d['n']}單｜勝率 `{win:.0f}%`｜"
+                             f"PnL `{d['pnl']:+.2f}U`｜均 `{avg:+.0f}bps`｜"
+                             f"fee `-{d['fees']:.4f}` funding `{d['funding']:+.4f}`")
+        gs = self.engine.group_stats(datetime.now(TPE).date() if today_only else None)
+        lines.append("")
+        for grp in ("G1", "G2"):
+            d = gs[grp]
             win = d["wins"] / d["n"] * 100 if d["n"] else 0
-            lines.append(f"`{strat}` {d['n']}單｜勝率 `{win:.0f}%`｜"
-                         f"PnL `{d['pnl']:+.2f}U`｜均 `{avg:+.0f}bps`｜"
-                         f"fee `-{d['fees']:.4f}` funding `{d['funding']:+.4f}`")
+            lines.append(f"`{grp}` 合計 {d['n']}單｜勝率 `{win:.0f}%`｜"
+                         f"PnL `{d['pnl']:+.2f}U`｜權益 `{d['equity']:.2f}U`｜持倉 {d['open']}")
         return "\n".join(lines)
 
     def cmd_reconcile(self) -> str:
